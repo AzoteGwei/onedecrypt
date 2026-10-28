@@ -67,7 +67,7 @@ OVERVIEW_KEYS = {
     "locations",
     "b5UserUUID",
     "watchtowerExclusions",
-    "appIds",
+    "migrationDestination",
 }
 
 SECTION_KEYS = {"title", "name", "fields", "hideAddAnotherField"}
@@ -99,7 +99,7 @@ FULL_DOCUMENT_KEYS = {
 }
 URL_KEYS = {"label", "url", "mode"}
 LOGIN_FIELD_KEYS = {"value", "id", "name", "fieldType", "designation"}
-HTML_FORM_KEYS = {"htmlMethod", "htmlAction", "htmlID", "htmlName"}
+HTML_FORM_KEYS = {"htmlMethod", "htmlAction", "htmlId", "htmlID", "htmlName"}
 HISTORY_KEYS = {"value", "time"}
 
 ACCOUNT_KEYS = {"accountName", "name", "avatar", "email", "uuid", "domain"}

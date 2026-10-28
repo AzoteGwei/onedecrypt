@@ -26,8 +26,13 @@ from typing import Any
 
 from .crypto import DecryptionError
 from .database import Account, Item, Vault
-from .documents import extract_document
+from .documents import (
+    clean_file_reference,
+    extract_file_reference,
+    iter_file_references,
+)
 from .pux_schema import (
+    PROFILE_EXPORTER,
     PROFILE_FULL,
     PROFILE_IMPORTER,
     PROFILE_OFFICIAL,
@@ -115,7 +120,9 @@ def _convert_input_traits(traits: object) -> dict:
     return result
 
 
-def _convert_section_field(field: object) -> dict | None:
+def _convert_section_field(
+    field: object, file_info: dict[str, tuple[str, bytes]] | None = None
+) -> dict | None:
     if not isinstance(field, dict):
         return None
     title = field.get("title", field.get("t", ""))
@@ -127,6 +134,19 @@ def _convert_section_field(field: object) -> dict | None:
         value = _typed_value(kind, field["v"])
     else:
         value = None
+
+    if isinstance(value, dict):
+        file_reference = value.get("file")
+        nested = isinstance(file_reference, dict)
+        if not nested and (value.get("documentId") or value.get("document_id")):
+            file_reference = value
+        if isinstance(file_reference, dict):
+            document_id = file_reference.get("documentId") or file_reference.get("document_id")
+            if document_id and file_info is not None:
+                if str(document_id) not in file_info:
+                    return None
+                file_name, content = file_info[str(document_id)]
+                value = {"file": clean_file_reference(file_reference, len(content))}
 
     result: dict[str, Any] = {"title": str(title or ""), "id": str(field_id or "")}
     if value is not None:
@@ -163,7 +183,9 @@ def _convert_section_field(field: object) -> dict | None:
     return result
 
 
-def _convert_section(section: object) -> dict | None:
+def _convert_section(
+    section: object, file_info: dict[str, tuple[str, bytes]] | None = None
+) -> dict | None:
     if not isinstance(section, dict):
         return None
     result: dict[str, Any] = {}
@@ -173,7 +195,9 @@ def _convert_section(section: object) -> dict | None:
         result["name"] = str(section["name"])
     fields = section.get("fields")
     if isinstance(fields, list):
-        result["fields"] = [f for f in (_convert_section_field(item) for item in fields) if f]
+        result["fields"] = [
+            f for f in (_convert_section_field(item, file_info) for item in fields) if f
+        ]
     else:
         result["fields"] = []
     hidden = section.get("hideAddAnotherField")
@@ -210,11 +234,13 @@ def _convert_html_form(form: object) -> dict | None:
     if not isinstance(form, dict):
         return None
     result = {}
-    for key in ("htmlMethod", "htmlAction", "htmlID", "htmlName"):
+    # The shipped exporter writes ``htmlId`` (lower-case d).  The importer
+    # accepts both spellings, so accept ``htmlID`` as a local/legacy alias.
+    for key in ("htmlMethod", "htmlAction", "htmlId", "htmlName"):
         if key in form:
             result[key] = str(form[key])
-        elif key == "htmlID" and "htmlId" in form:
-            result[key] = str(form["htmlId"])
+        elif key == "htmlId" and "htmlID" in form:
+            result[key] = str(form["htmlID"])
     return result or None
 
 
@@ -233,12 +259,25 @@ def _convert_password_history(history: object) -> list[dict]:
     return result
 
 
-def _convert_document_attributes(attrs: object, document_size: int | None) -> dict | None:
+def _convert_document_attributes(
+    attrs: object,
+    document_size: int | None,
+    file_info: dict[str, tuple[str, bytes]] | None = None,
+) -> dict | None:
     if not isinstance(attrs, dict):
         return None
     document_id = attrs.get("documentId") or attrs.get("document_id")
     if not document_id:
         return None
+    if file_info is not None:
+        if str(document_id) not in file_info:
+            return None
+        file_name, content = file_info[str(document_id)]
+        return {
+            "fileName": file_name,
+            "documentId": str(document_id),
+            "decryptedSize": len(content),
+        }
     size = document_size
     if size is None:
         size = attrs.get("decryptedSize")
@@ -259,6 +298,7 @@ def _normalize_details(
     category_uuid: str,
     document_size: int | None = None,
     profile: str = PROFILE_OFFICIAL,
+    file_info: dict[str, tuple[str, bytes]] | None = None,
 ) -> dict:
     """Convert decrypted B5 details into the selected 1PUX profile."""
     if not isinstance(details, dict):
@@ -283,7 +323,9 @@ def _normalize_details(
 
     sections = details.get("sections")
     if isinstance(sections, list):
-        converted_sections = [s for s in (_convert_section(item) for item in sections) if s]
+        converted_sections = [
+            s for s in (_convert_section(item, file_info) for item in sections) if s
+        ]
         if converted_sections:
             result["sections"] = converted_sections
 
@@ -296,7 +338,7 @@ def _normalize_details(
         result["password"] = password
 
     document_attributes = _convert_document_attributes(
-        details.get("documentAttributes"), document_size
+        details.get("documentAttributes"), document_size, file_info
     )
     if document_attributes:
         result["documentAttributes"] = document_attributes
@@ -314,7 +356,9 @@ def _convert_url(url: object) -> dict | None:
     if not target:
         return None
     result = {"label": str(url.get("label", url.get("l", "")) or ""), "url": str(target)}
-    mode = url.get("mode")
+    # B5/local JSON uses either the long or the short spelling; the exporter
+    # writes the canonical ``mode`` key.
+    mode = url.get("mode", url.get("m"))
     if mode:
         result["mode"] = str(mode)
     return result
@@ -355,23 +399,35 @@ def _normalize_overview(
     if subtitle:
         result["subtitle"] = str(subtitle)
 
+    # ``appIds`` exists only in the local B5 overview and is not accepted by
+    # the v3 importer's ItemOverview field visitor.  ``passkey``/``passkeyId``
+    # are importer-only because the exporter path does not emit passkeys.
     for key in (
-        "icons",
         "passkey",
         "passkeyId",
-        "shortcut",
         "locations",
         "b5UserUUID",
         "watchtowerExclusions",
-        "appIds",
     ):
         if key not in source or source[key] in (None, [], {}):
             continue
         if key in ("passkey", "passkeyId") and profile != PROFILE_IMPORTER:
             continue
-        if key == "icons" and not isinstance(source[key], dict):
-            continue
         result[key] = source[key]
+
+    # The v3 ItemShortcut is a struct, while older/local overviews may store
+    # just the shortcut string.  Normalize the scalar form.
+    shortcut = source.get("shortcut")
+    if isinstance(shortcut, str) and shortcut:
+        result["shortcut"] = {"value": shortcut}
+    elif isinstance(shortcut, dict) and shortcut:
+        result["shortcut"] = shortcut
+
+    # The exporter emits ``migrationDestination`` for items migrated from
+    # another account.  The local B5 overview may use either spelling.
+    migration = source.get("migrationDestination", source.get("MigrationDestination"))
+    if isinstance(migration, dict) and migration:
+        result["migrationDestination"] = migration
     return result
 
 
@@ -379,10 +435,13 @@ def _normalize_item(
     item: Item,
     document_size: int | None = None,
     profile: str = PROFILE_OFFICIAL,
+    file_info: dict[str, tuple[str, bytes]] | None = None,
 ) -> dict:
     data = item.data
     category_uuid = str(data.get("category_uuid", ""))
-    details = _normalize_details(item.details or {}, category_uuid, document_size, profile)
+    details = _normalize_details(
+        item.details or {}, category_uuid, document_size, profile, file_info
+    )
     if profile == PROFILE_FULL:
         overview = copy.deepcopy(item.overview or {})
     else:
@@ -409,27 +468,45 @@ def _normalize_item(
     return result
 
 
-def _normalize_vault(vault: Vault) -> dict:
+def _normalize_vault(vault: Vault, profile: str = PROFILE_OFFICIAL) -> dict:
     attrs = dict(vault.attrs or {})
     name = attrs.get("name") or f"Vault {vault.uuid[:6]}"
     desc = attrs.get("desc", attrs.get("description", ""))
     avatar = attrs.get("avatar", attrs.get("icon", "") if isinstance(attrs.get("icon"), str) else "")
+    vault_type = str(vault.type or "U")
+    if profile != PROFILE_FULL:
+        # The v3 importer turns a non-empty avatar into a ``files/<name>``
+        # lookup.  The local database does not contain the avatar blobs we
+        # would need to satisfy that lookup, so canonical profiles clear the
+        # field instead of emitting a dangling file reference.
+        avatar = ""
+        if vault_type not in ("P", "E", "U"):
+            vault_type = "U"
     return {
         "uuid": vault.uuid,
         "desc": str(desc or ""),
         "avatar": str(avatar or ""),
         "name": str(name),
-        "type": str(vault.type or "U"),
+        "type": vault_type,
     }
 
 
-def _normalize_account(account: Account) -> dict:
+def _normalize_account(account: Account, profile: str = PROFILE_OFFICIAL) -> dict:
     data = account.data
     fallback = data.get("user_email") or account.uuid
+    full_name = data.get("fullName") or data.get("full_name")
+    avatar = data.get("team_avatar") or data.get("user_avatar") or ""
+    if profile != PROFILE_FULL:
+        # See _normalize_vault: account avatars are also resolved as files by
+        # the importer.  The blob is not part of the local export cache.
+        avatar = ""
     return {
-        "accountName": data.get("team_name") or data.get("user_name") or fallback,
-        "name": data.get("user_name") or data.get("team_name") or fallback,
-        "avatar": data.get("team_avatar") or data.get("user_avatar") or "",
+        "accountName": data.get("team_name")
+        or full_name
+        or data.get("user_name")
+        or fallback,
+        "name": full_name or data.get("user_name") or data.get("team_name") or fallback,
+        "avatar": avatar,
         "email": data.get("user_email") or "",
         "uuid": account.uuid,
         "domain": data.get("sign_in_url") or "",
@@ -451,23 +528,58 @@ def build_export_data(
             continue
         items = []
         for item in vault.items:
-            try:
-                document = extract_document(
-                    item.details or {}, account.uuid, files_dir, fallback_key=vault.key
+            # The official exporter does not export Trash.  `importer` keeps
+            # deleted items because the importer schema accepts them; `full`
+            # is a local backup and keeps everything.
+            if (
+                profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER)
+                and item_state(item.data.get("state")) == "deleted"
+            ):
+                continue
+
+            file_info: dict[str, tuple[str, bytes]] = {}
+            raw_details = item.details or {}
+            for reference in iter_file_references(raw_details):
+                document_id = str(
+                    reference.get("documentId") or reference.get("document_id") or ""
                 )
-            except (FileNotFoundError, DecryptionError, ValueError) as exc:
-                warnings.warn(f"item {item.uuid}: {exc}", stacklevel=2)
-                document = None
-            document_size = len(document[1]) if document is not None else None
-            normalized = _normalize_item(item, document_size, profile)
+                if not document_id or document_id in file_info:
+                    continue
+                try:
+                    extracted = extract_file_reference(
+                        reference, account.uuid, files_dir, fallback_key=vault.key
+                    )
+                except (FileNotFoundError, DecryptionError, ValueError) as exc:
+                    warnings.warn(f"item {item.uuid}: {exc}", stacklevel=2)
+                    continue
+                if extracted is not None:
+                    file_info[document_id] = extracted
+
+            if (
+                profile != PROFILE_FULL
+                and str(item.data.get("category_uuid", "")) == "006"
+                and isinstance(raw_details.get("documentAttributes"), dict)
+                and not file_info
+            ):
+                warnings.warn(
+                    f"item {item.uuid}: document item has no locally available file; skipping",
+                    stacklevel=2,
+                )
+                continue
+
+            normalized = _normalize_item(item, None, profile, file_info)
             items.append(normalized)
-            if document is not None:
-                file_name, content = document
-                document_id = (item.details or {}).get("documentAttributes", {}).get("documentId") or ""
-                if document_id:
-                    files[f"files/{document_id}___{file_name}"] = content
-        vaults.append({"attrs": _normalize_vault(vault), "items": items})
-    data = {"accounts": [{"attrs": _normalize_account(account), "vaults": vaults}]}
+            for document_id, (file_name, content) in file_info.items():
+                # The v3 exporter names file entries ``<documentId>__<fileName>``
+                # (two underscores).  The importer reconstructs the same name
+                # from documentAttributes before calling ZipArchive::by_name.
+                files[f"files/{document_id}__{file_name}"] = content
+        vaults.append({"attrs": _normalize_vault(vault, profile), "items": items})
+    data = {
+        "accounts": [
+            {"attrs": _normalize_account(account, profile), "vaults": vaults}
+        ]
+    }
     validate_export_data(data, profile)
     return data, files
 
@@ -509,12 +621,12 @@ def dump_account_json(account: Account, profile: str = PROFILE_OFFICIAL) -> dict
             "email": account.email,
             "name": account.name,
             "teamName": account.team_name,
-            "attrs": _normalize_account(account),
+            "attrs": _normalize_account(account, profile),
         },
         "vaults": [
             {
                 "uuid": vault.uuid,
-                "attrs": _normalize_vault(vault),
+                "attrs": _normalize_vault(vault, profile),
                 "items": [_normalize_item(item, profile=profile) for item in vault.items],
             }
             for vault in account.vaults

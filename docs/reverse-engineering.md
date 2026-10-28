@@ -179,7 +179,7 @@ v3 `InnerVaultItem` has no `trashed` field, so it is not emitted.
    `documentAttributes`.
 4. AES-256-GCM decrypt the file bytes with that key and nonce.
 
-The exporter writes the plaintext as `files/<documentId>___<fileName>` and
+The exporter writes the plaintext as `files/<documentId>__<fileName>` and
 reduces `documentAttributes` to the `fileName`, `documentId`, and
 `decryptedSize` fields expected by 1PUX.
 
@@ -206,16 +206,18 @@ strings:
 - The v3 `ItemDetails` field dispatcher has `htmlForm`, `loginFields`,
   `notesPlain`, `sections`, `passwordHistory`, `password`, `passkey`, and
   `documentAttributes`.
-- The v3 `ItemOverview` dispatcher has 16 fields, including `subtitle`
-  (alias `ainfo`), `icons`, `shortcut`, `locations`, `b5UserUUID`,
-  `watchtowerExclusions`, and `appIds`.
+- The v3 `ItemOverview` importer dispatcher has 20 accepted strings,
+  including `subtitle`/`ainfo`, `icons`, `shortcut`, `locations`,
+  `b5UserUUID`/`b5UserUuid`, `watchtowerExclusions`,
+  `MigrationDestination`/`migrationDestination`, `passkey`/`passkeyId`.
+  `appIds` is **not** among them.
 - `DetailSection` has `title`, `name`, `fields`, `hideAddAnotherField`.
 - `DetailSectionField` has `title`, `id`, `value`, `guarded`, `multiline`,
   `dontGenerate`, `indexAtSource`, `placeholder`, `inputTraits`,
   `clipboardFilter`; input traits are `keyboard`, `correction`,
   `capitalization`.
-- `DocumentAttributes` has nine fields; the plaintext 1PUX export uses
-  `fileName`, `documentId`, and `decryptedSize`.
+- `DocumentAttributes` has ten importer fields; the plaintext 1PUX export
+  uses `fileName`, `documentId`, and `decryptedSize`.
 
 The exporter therefore writes:
 
@@ -239,10 +241,23 @@ capability sets:
 
 The current matrix has the same field sets for `official` and `exporter`.
 `importer` adds the importer-only `passkey` field, which the exporter path
-does not emit.  The names remain separate so a future correction to either
-code path cannot silently change the meaning of a profile.  `full`
-additionally keeps `trashed`, `changerUuid`, `scope`, `stateRaw`, `validated`,
-raw short-key section fields, and the full document encryption metadata.
+does not emit, plus legacy aliases accepted by the serde visitors.  The names
+remain separate so a future correction to either code path cannot silently
+change the meaning of a profile.  `full` additionally keeps `trashed`,
+`changerUuid`, `scope`, `stateRaw`, `validated`, raw short-key section fields,
+`appIds`, and the full document encryption metadata.
+
+Two field-set corrections from the importer analysis:
+
+- `appIds` exists in the local B5 overview but is **not** in the importer's
+  `ItemOverview` visitor.  It is therefore local-only (`full`) and absent from
+  `official`/`importer`/`exporter`.
+- The official exporter omits Trash.  `official`/`exporter` therefore export
+  only `active`/`archived` items; `importer` also emits `deleted` because the
+  importer's `ItemState` visitor accepts it, and `full` keeps everything.
+
+The machine-readable versions of these profiles, with per-field comments and
+the exact ZIP file naming rules, are in `docs/schema/`.
 
 ## 1PUX import path
 
@@ -267,17 +282,18 @@ Import flow:
    The category string is parsed as a `Category`; `state` is
    `active`/`archived`/`deleted`; `uuid`, `favIndex`, timestamps, `details`,
    and `overview` are copied.
-3. Deserialize `ItemDetails` into the internal details model.  The importer
-   accepts the same eight fields as the exporter: `htmlForm`, `loginFields`,
-   `notesPlain`, `sections`, `passwordHistory`, `password`, `passkey`, and
-   `documentAttributes`.
-4. Deserialize `ItemOverview` into the internal overview model.  `subtitle`
-   and `ainfo` are aliases; `icons`, `urls`, `tags`, `ps`, `pbe`, `pgrng`,
-   `shortcut`, `locations`, `b5UserUUID`, `watchtowerExclusions`, and `appIds`
-   are accepted.
+3. Deserialize `ItemDetails` into the internal details model.  The canonical
+   fields are `htmlForm`, `loginFields`, `notesPlain`, `sections`,
+   `passwordHistory`, `password`, `passkey`, and `documentAttributes`.
+4. Deserialize `ItemOverview` into the internal overview model.  The visitor
+   accepts `ainfo`, `subtitle`, `b5UserUUID`/`b5UserUuid`, `icons`,
+   `URLs`/`urls`, `tags`, `title`, `url`, `ps`, `pbe`, `pgrng`,
+   `passkeyId`/`passkey`, `MigrationDestination`/`migrationDestination`,
+   `watchtowerExclusions`, `shortcut`, and `locations`.  `appIds` is **not**
+   accepted; it exists only in the local B5 overview.
 5. `DocumentAttributes` has two paths:
    - Plaintext 1PUX: `fileName`, `documentId`, `decryptedSize`; the file body
-     is read from `files/<documentId>___<fileName>`.
+     is read from `files/<documentId>__<fileName>`.
    - Encrypted/import-file path: `encryptionKey`, `nonce`, `integrityHash`,
      `encryptedSize`, `signingKey`, etc.; this is used by other importers, not
      by a plaintext 1PUX export.

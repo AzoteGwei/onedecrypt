@@ -92,7 +92,7 @@ def test_short_section_fields_are_converted():
         "htmlForm": {
             "htmlMethod": "POST",
             "htmlAction": "/login",
-            "htmlID": "form1",
+            "htmlId": "form1",
             "htmlName": "login",
         },
     }
@@ -117,7 +117,7 @@ def test_short_section_fields_are_converted():
     assert details["htmlForm"] == {
         "htmlMethod": "POST",
         "htmlAction": "/login",
-        "htmlID": "form1",
+        "htmlId": "form1",
         "htmlName": "login",
     }
     overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
@@ -125,7 +125,7 @@ def test_short_section_fields_are_converted():
     assert overview["urls"] == [
         {"label": "", "url": "https://example.com", "mode": "anywhereOnWebsite"}
     ]
-    assert overview["icons"] == {"1": {"type": "default"}}
+    assert "icons" not in overview
     assert "ainfo" not in overview
 
 
@@ -172,8 +172,11 @@ def test_full_profile_keeps_extra_metadata():
     item = account.vaults[0].items[0]
     item.data["changer_uuid"] = "USER"
     item.data["state"] = 1
-    item.overview = {"title": "Example", "scope": "private"}
+    account.vaults[0].data["vault_type"] = "G"
+    item.overview = {"title": "Example", "scope": "private", "icons": {"1": {"type": "default"}}}
     item.details = {"sections": [{"name": "s", "title": "", "fields": []}]}
+    official_data, _ = build_export_data(account, profile=PROFILE_OFFICIAL)
+    assert official_data["accounts"][0]["vaults"][0]["attrs"]["type"] == "U"
     data, _ = build_export_data(account, profile=PROFILE_FULL)
     full_item = data["accounts"][0]["vaults"][0]["items"][0]
     assert full_item["state"] == "archived"
@@ -181,6 +184,8 @@ def test_full_profile_keeps_extra_metadata():
     assert full_item["trashed"] == "N"
     assert full_item["changerUuid"] == "USER"
     assert full_item["scope"] == "private"
+    assert full_item["overview"]["icons"] == {"1": {"type": "default"}}
+    assert data["accounts"][0]["vaults"][0]["attrs"]["type"] == "G"
     assert full_item["details"] == item.details
     validate_export_data(data, PROFILE_FULL)
     with_extra = json.loads(json.dumps(data))
@@ -203,3 +208,88 @@ def test_schema_rejects_non_official_fields():
         pass
     else:
         raise AssertionError("validator accepted a non-official item field")
+
+
+def test_section_file_reference_is_cleaned_and_exported(tmp_path: Path):
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    plaintext = b"attachment body"
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
+    files_dir = tmp_path / "files"
+    (files_dir / "ACCOUNT").mkdir(parents=True)
+    (files_dir / "ACCOUNT" / "doc1").write_bytes(ciphertext)
+
+    account = synthetic_account()
+    account.vaults[0].key = key
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "name": "attachments",
+                "title": "",
+                "fields": [
+                    {
+                        "t": "Attachment",
+                        "n": "f1",
+                        "k": "file",
+                        "v": {
+                            "file": {
+                                "fileName": "a.txt",
+                                "documentId": "doc1",
+                                "decryptedSize": len(plaintext),
+                                "nonce": b64u(nonce),
+                                "encryptionKey": sym_jwk(key, "file"),
+                            }
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    data, files = build_export_data(account, files_dir)
+    assert files == {"files/doc1__a.txt": plaintext}
+    field = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0]["fields"][0]
+    assert field["value"] == {
+        "file": {
+            "fileName": "a.txt",
+            "documentId": "doc1",
+            "decryptedSize": len(plaintext),
+        }
+    }
+
+
+def test_missing_document_item_is_skipped(tmp_path: Path):
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["category_uuid"] = "006"
+    item.details = {
+        "documentAttributes": {
+            "fileName": "missing.pdf",
+            "documentId": "missing",
+            "decryptedSize": 10,
+        }
+    }
+    item.overview = {"title": "Missing document"}
+    data, files = build_export_data(account, tmp_path / "files")
+    assert data["accounts"][0]["vaults"][0]["items"] == []
+    assert files == {}
+
+
+def test_deleted_items_follow_the_official_exporter():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["state"] = 2
+
+    official, _ = build_export_data(account, profile=PROFILE_OFFICIAL)
+    assert official["accounts"][0]["vaults"][0]["items"] == []
+
+    exporter, _ = build_export_data(account, profile=PROFILE_EXPORTER)
+    assert exporter["accounts"][0]["vaults"][0]["items"] == []
+
+    importer, _ = build_export_data(account, profile=PROFILE_IMPORTER)
+    assert importer["accounts"][0]["vaults"][0]["items"][0]["state"] == "deleted"
+
+    full, _ = build_export_data(account, profile=PROFILE_FULL)
+    assert full["accounts"][0]["vaults"][0]["items"][0]["state"] == "deleted"
