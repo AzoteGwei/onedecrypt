@@ -1,0 +1,21 @@
+[project]
+name = "onedecrypt"
+version = "0.1.0"
+description = "Offline decryptor and 1PUX rebuilder for 1Password 8 local databases"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=44.0.0",
+]
+
+[project.scripts]
+onedecrypt = "onedecrypt.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

@@ -1,0 +1,219 @@
+# Reverse-engineering notes
+
+This document records how the decryptor was derived and which evidence backs
+each step.  It is intentionally separate from the user-facing README because
+it contains addresses and internal identifiers that only matter when the
+implementation is audited or updated.
+
+## Targets
+
+| Artifact | Identity | Role |
+| --- | --- | --- |
+| `op.zip` → `op` | 1Password CLI 2.41.1, Go 1.26.10, ELF x86-64, stripped | Primary target for the cryptographic logic |
+| `~/.config/1Password/1password.sqlite` | 1Password 8.11/8.12 desktop database, schema version 61 | Data source: accounts, keysets, vaults, items |
+| `/opt/1Password/resources/app.asar.unpacked/index.node` | 1Password 8.12.32 desktop core (Rust, not stripped) | Confirmation of the 1PUX v3 schema and DB item-state semantics |
+
+The database is written by the **desktop app**, not by the CLI.  The CLI does
+not create `1password.sqlite`.  However, the CLI's Go module
+`go.1password.io/core-security` contains the same B5 key hierarchy and JWE
+constructions, which is why the Go binary is the right place to recover the
+format.  The desktop core was used only to confirm the export wrapper and the
+meaning of the integer `state` column.
+
+## Symbol recovery
+
+`op` has no ELF symbol table, but it is a Go binary and still contains
+`.gopclntab`.  GoReSym recovered 34,145 functions and the Go type graph;
+Binary Ninja was used to decompile the relevant functions and to inspect the
+desktop core.  The helper script `tools/gopcln.py` parses the Go 1.26 pclntab
+directly (the `textStart` field was removed in Go 1.26; the text base comes
+from the ELF `.text` section).
+
+## 2SKD: Secret Key + Master Password → MUK
+
+Relevant functions in `op`:
+
+| Address | Symbol | Finding |
+| --- | --- | --- |
+| `0x6fcd60` | `crypto.ComputeExistingMUK` | Dispatches on the MUK algorithm string: `PBES2g-HS256` (11 chars) and `PBES2-HS256` (12 chars) |
+| `0x6fd5a0` | `crypto.computePBES2gHS256MUK` | Current 1Password 8 derivation |
+| `0x6fd360` | `crypto.computePBES2HS256MUK` | Older derivation; uses `prehashPassword` |
+| `0x6fd320` | `crypto.(*MUKParams).SaltBytes` | `p2s` is base64-decoded with `RelaxedBase64URLDecodeString` |
+| `0x700e60` | `crypto.(*SecretKey).HKDF` | `HKDF-SHA256(ikm=secret, salt=account_id, info=version)` → 32 bytes |
+| `0x6fda80` | `crypto.normalizePassword` | Unicode NFKD (`norm.Form(3)`) then leading/trailing whitespace removal |
+| `0x6fd080` | `crypto.GenerateNewMUK` | Confirms `p2s` is 16 random bytes and the default iteration count is 100,000 for newly created MUKs |
+| `0x6fd880` | `crypto.prehashPassword` | Older `PBES2-HS256`: NFKD/trim, SHA-256, base64, strip `=`.  Not implemented by this tool because the current accounts use `PBES2g-HS256`. |
+
+Decompiled logic for `PBES2g-HS256`:
+
+```text
+secret       = HKDF-SHA256(ikm = SecretKey.key,
+                           salt = SecretKey.account_id,
+                           info = SecretKey.version, len = 32)
+email_lower  = strings.ToLower(account.email)
+password_salt= HKDF-SHA256(ikm = base64url_decode(p2s),
+                           salt = email_lower,
+                           info = "PBES2g-HS256", len = 32)
+derived      = PBKDF2-HMAC-SHA256(password = normalizePassword(password),
+                                  salt = password_salt,
+                                  iterations = p2c, dkLen = 32)
+MUK          = derived XOR secret
+```
+
+The Secret Key is split exactly as displayed:
+
+```text
+A3-ASWWYB-798JRY-LJVD4-23DC2-86TVM-H43EB
+^^ ^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^
+|  |      secret (26 chars for A3, 25 for A2)
+|  account ID (6 chars)
+version ("A3" / "A2")
+```
+
+The ASCII characters are used directly by HKDF; they are not base32-decoded.
+This was confirmed with the published 2SKD vector:
+
+```text
+Secret Key  A3-ASWWYB-798JRY-LJVD4-23DC2-86TVM-H43EB
+Password    update-clown-squid-bedpost
+Email       nobody@example.com
+p2s         cA4f6QY7wwUoclj74RMvUg==
+p2c         100000
+MUK         6VIFjzKXaHctk44NXr8hOenpgwxWgZebtOlGkPwGK-Y=
+```
+
+`src/onedecrypt/cli.py self-test` checks both this MUK vector and the
+associated AES-GCM keyset ciphertext.
+
+## Keyset graph
+
+`EncryptedKeysetV1.DecryptV1` at `0x6f9be0` shows the order:
+
+1. Read the MUK parameters from `encSymKey` (`alg`, `p2c`, `p2s`).
+2. Derive the MUK (above).
+3. AES-256-GCM decrypt `encSymKey` with the MUK.  The plaintext is an `oct`
+   JWK.
+4. AES-256-GCM decrypt `encPriKey` with that symmetric key.  The plaintext is
+   an RSA private JWK.
+5. If `encSignKey` exists, decrypt it with the same symmetric key and parse an
+   ECDSA private JWK.
+
+Root keysets have `encryptedBy: "mp"`.  Child keysets have
+`encryptedBy: <parent keyset UUID>` and their `encSymKey` is RSA-OAEP
+encrypted with the parent's public key.  The implementation resolves this
+graph iteratively (`resolve_keysets` in `src/onedecrypt/decrypt.py`).
+
+## Vault and item decryption
+
+| Address | Symbol | Finding |
+| --- | --- | --- |
+| `0xb59e60` | `local.decryptedKeyForVault` | Looks up the keyset named by `enc_vault_key.kid`, decrypts the vault key, parses a symmetric JWK |
+| `0xb5a280` | `local.decryptedAttrsForVault` | AES-GCM decrypts `enc_attrs`, then JSON |
+| `0xb596a0` | `local.(*DecryptedVault).DecryptVaultItem` | AES-GCM decrypts `details` and `overview` with the vault key |
+| `0x703420` | `crypto.(*SymmetricKey).DecryptV1` | Base64url-decodes `iv`/`data`, checks `kid`, calls `DecryptRaw` |
+| `0x703760` | `crypto.(*SymmetricKey).DecryptRaw` | AES-256-GCM; `iv` must be 12 bytes in the current path; data is ciphertext‖tag; no AAD |
+| `0x7006c0` | `crypto.decryptContent` | Same GCM construction, used by the content layer |
+| `0x6fe660` | `crypto.(*RSAPrivateKey).DecryptV1` | RSA-OAEP decrypt of `enc_vault_key`; `kid` must match |
+| `0x700000` | `crypto.rsaHashForAlg` | `RSA-OAEP` → SHA-1, `RSA-OAEP-256` → SHA-256 |
+
+The older 16-byte IVs seen in exported test data also decrypt correctly: Go's
+GCM accepts arbitrary nonce lengths and Python `cryptography` uses the same
+GHASH-based J0 derivation.
+
+## Database schema and B5 payloads
+
+The outer database rows are JSON with snake_case keys:
+
+```text
+accounts.data : account metadata (email, names, sign-in URL, keysets)
+vaults.data   : vault_type, enc_vault_key, enc_attrs, ...
+items.data    : category_uuid, changer_uuid, created_at, updated_at,
+                is_favorite, state, details, overview
+```
+
+`details` and `overview` are JWE-B objects:
+
+```json
+{"cty":"b5+jwk+json","kid":"<vault-key-id>","enc":"A256GCM",
+ "iv":"<base64url nonce>","data":"<base64url ciphertext||tag>"}
+```
+
+The decrypted item bodies use the B5/`op_model_item` JSON schema:
+
+- Login details: `fields` (username/password/designation), `notesPlain`,
+  `sections`, `passwordHistory`.
+- Password details: `password`, `notesPlain`, `sections`.
+- Document details: `documentAttributes` with `fileName`, `documentId`,
+  `nonce`, `integrityHash`, `encryptionKey` (a symmetric JWK), and sizes.
+- Overview: `title`, `url`, `urls`, `tags`, `ps`, `pbe`, `pgrng`, `ainfo`,
+  `icons`, `scope`, `b5UserUUID`.
+
+The 1PUX exporter converts the login `fields` array to `loginFields` and the
+legacy `ainfo` to `subtitle`.  All other detail/overview keys are passed
+through because they already have the 1PUX spelling.
+
+The integer `state` field is interpreted using the desktop SQL found in
+`index.node`:
+
+```sql
+SELECT count(*) FROM items WHERE data ->> '$.state' = 0
+-- active items
+SELECT count(*) FROM items WHERE data ->> '$.state' != 0
+-- inactive items
+```
+
+The exporter maps `0 → active`, `1 → archived`, `2 → deleted` and emits the
+legacy `trashed` flag as `N` except for deleted items (`Y`).
+
+## Document files
+
+`local.DecryptFile` at `0xb577a0`:
+
+1. Read the file blob (normally
+   `~/.config/1Password/files/<account_uuid>/<documentId>`).
+2. Check `integrityHash` (SHA-256, base64url of the digest).
+3. Decode `nonce` and the per-file `encryptionKey` JWK from
+   `documentAttributes`.
+4. AES-256-GCM decrypt the file bytes with that key and nonce.
+
+The exporter writes the plaintext as `files/<documentId>___<fileName>` and
+reduces `documentAttributes` to the `fileName`, `documentId`, and
+`decryptedSize` fields expected by 1PUX.
+
+## 1PUX schema confirmation
+
+The desktop core contains the Rust crate
+`op_import_export::models::translation::onepux::v3`.  Relevant symbols and
+strings:
+
+- `LocalVaultExporter::convert` at `0x3c26e00`.
+- `InnerVaultItem as From<op_model_item::Item>` at `0x5d6da10`.
+- `Account as From<op_exported_account>` at `0x5d6e760`,
+  `Vault as From<op_exported_vault>` at `0x5d6f1d0`.
+- The writer strings `export.attributes` / `export.data` / `files` at file
+  offset `0xf35cb8`.
+- `ItemState` deserializer at `0x4530ba0` compares the strings `active`,
+  `archived`, and `deleted`.
+- The item field dispatcher contains `uuid`, `favIndex`, `categoryUuid`,
+  `trashed`, `state`, `overview`, `details`, `createdAt`, `updatedAt`.
+
+The exporter therefore writes:
+
+```text
+export.attributes = {version: 3, description: "1Password Unencrypted Export", createdAt}
+export.data       = {accounts: [{attrs, vaults: [{attrs, items: [...]}]}]}
+files/            = optional decrypted documents
+```
+
+## Verification
+
+```bash
+uv run pytest
+uv run onedecrypt self-test
+uv run onedecrypt list-accounts
+```
+
+An end-to-end check requires the account's real Secret Key and Master
+Password.  The tool deliberately does not attempt to recover or bypass them.
+If the MUK is wrong, the root keyset's AES-GCM tag fails and the tool exits
+with status 3 without writing an export.

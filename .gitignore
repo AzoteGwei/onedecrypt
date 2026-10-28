@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+work/
+op.zip
+GoReSym-linux.zip
+*.1pux
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

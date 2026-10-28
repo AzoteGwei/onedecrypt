@@ -1,0 +1,96 @@
+# onedecrypt
+
+Offline decryptor and 1PUX rebuilder for the local **1Password 8 desktop**
+database (`1password.sqlite`).  The database uses the same B5 key hierarchy
+and JWE constructions that 1Password CLI 2.x implements in
+`go.1password.io/core-security`.
+
+The tool reads the local SQLite database, derives the account's Master Unlock
+Key from the Secret Key and Master Password, decrypts the keyset graph, vault
+keys and item payloads, and writes a standard `.1pux` archive.  It never
+contacts 1Password servers and never modifies the source database.
+
+## Requirements
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
+
+## Usage
+
+```bash
+# List the accounts cached in the local database
+uv run onedecrypt list-accounts
+
+# Decrypt one account and write <account-uuid>.1pux
+uv run onedecrypt decrypt \
+  --account you@example.com \
+  --secret-key 'A3-XXXXXX-XXXXXX-XXXXX-XXXXX-XXXXX-XXXXX' \
+  --password 'your master password' \
+  --out rescue.1pux
+
+# Check the credentials without writing an export
+uv run onedecrypt decrypt --account you@example.com \
+  --secret-key 'A3-...' --password '...' --check
+
+# Verify the published 2SKD/AES-GCM test vectors
+uv run onedecrypt self-test
+
+# Run the unit tests
+uv run pytest
+```
+
+By default the database is read from
+`~/.config/1Password/1password.sqlite` and document blobs from
+`~/.config/1Password/files`.  Use `--db`, `--files-dir`, or `--no-files` to
+override this.
+
+If the database is locked by a running 1Password desktop app, the tool copies
+the database and its WAL/SHM sidecars to a private temporary directory before
+opening it.  The original files are only read.  For a fully consistent
+snapshot, quit 1Password before running the export.
+
+If `list-accounts` shows more than one account (for example an old family
+account and a new personal account with the same email), run `decrypt` once per
+account.  When the emails are identical, select the account by its UUID (the
+third column of `list-accounts`).  The wrong Secret Key for an account fails
+closed at the AES-GCM tag check; it cannot produce a corrupted export.
+
+## What is implemented
+
+- 2SKD MUK derivation for `PBES2g-HS256` accounts (650,000 iterations in the
+  current database; the iteration count is read from the keyset).
+- Secret Key parsing (`A2` and `A3` formats), NFKD password normalization.
+- Root and chained keyset decryption (MUK → keyset RSA private key → child
+  keyset → vault key).
+- AES-256-GCM (including the older 16-byte IVs), RSA-OAEP (SHA-1 and
+  SHA-256), RSA and symmetric JWK parsing.
+- Vault attributes, item details/overview, and locally cached document files.
+- 1PUX `export.attributes`, `export.data`, and `files/` entries.
+
+## Limitations
+
+- Only `PBES2g-HS256` MUK parameters are implemented.  `PBES2-HS256` (older
+  accounts) is detected and rejected with a clear error.
+- The database state integer is mapped as `0 = active`, `1 = archived`,
+  `2 = deleted` (the desktop SQL counts active items with `state = 0`); see
+  `src/onedecrypt/pux.py`.  All items are exported either way.
+- Documents are only included if the encrypted blobs are present under the
+  local `files/` cache.  The tool cannot download missing attachments.
+- The 1PUX exporter is a reconstruction from the documented format and the
+  decrypted B5 item bodies.  It does not reproduce every desktop-only
+  decoration (custom icon files, for example), but preserves item fields,
+  notes, sections, URLs, tags, password history, and document metadata.
+
+## Security
+
+A `.1pux` file is **unencrypted**.  Treat it like a plaintext password dump:
+keep it on an encrypted disk, do not upload it, and delete it once the data has
+been imported elsewhere.  The tool keeps all plaintext in memory and only
+writes the requested output files.
+
+## Reverse-engineering notes
+
+The cryptographic construction was recovered with Binary Ninja from the
+stripped Go `op` 2.41.1 binary in `op.zip`.  See
+[`docs/reverse-engineering.md`](docs/reverse-engineering.md) for the function
+map, call graph, and test vectors.
