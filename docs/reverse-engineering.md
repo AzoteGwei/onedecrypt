@@ -148,9 +148,11 @@ The decrypted item bodies use the B5/`op_model_item` JSON schema:
 - Overview: `title`, `url`, `urls`, `tags`, `ps`, `pbe`, `pgrng`, `ainfo`,
   `icons`, `scope`, `b5UserUUID`.
 
-The 1PUX exporter converts the login `fields` array to `loginFields` and the
-legacy `ainfo` to `subtitle`.  All other detail/overview keys are passed
-through because they already have the 1PUX spelling.
+The strict 1PUX v3 exporter converts the login `fields` array to
+`loginFields`, maps short section fields (`t/n/k/v/a`) to the official
+`title/id/value/...` form, maps `ainfo` to `subtitle`, and emits only the
+fields present in the v3 structs.  Passkeys are deliberately not emitted,
+matching the official 1PUX policy.
 
 The integer `state` field is interpreted using the desktop SQL found in
 `index.node`:
@@ -162,8 +164,8 @@ SELECT count(*) FROM items WHERE data ->> '$.state' != 0
 -- inactive items
 ```
 
-The exporter maps `0 → active`, `1 → archived`, `2 → deleted` and emits the
-legacy `trashed` flag as `N` except for deleted items (`Y`).
+The exporter maps `0 → active`, `1 → archived`, `2 → deleted`.  The official
+v3 `InnerVaultItem` has no `trashed` field, so it is not emitted.
 
 ## Document files
 
@@ -187,20 +189,37 @@ The desktop core contains the Rust crate
 strings:
 
 - `LocalVaultExporter::convert` at `0x3c26e00`.
-- `InnerVaultItem as From<op_model_item::Item>` at `0x5d6da10`.
-- `Account as From<op_exported_account>` at `0x5d6e760`,
-  `Vault as From<op_exported_vault>` at `0x5d6f1d0`.
+- `InnerVaultItem as From<op_model_item::Item>` at `0x616da10` (BN view
+  address; the file vaddr is `0x5d6da10`).
+- `ItemDetails as From<op_model_item::ItemDetails>` at `0x6173620`.
+- `ItemOverview as From<op_model_item::ItemOverview>` at `0x6172b80`.
+- `DataModel as From<ExportInfo>` at `0x616e320`.
+- `Attributes::default` at `0x6161b10` (description + timestamp + version).
 - The writer strings `export.attributes` / `export.data` / `files` at file
   offset `0xf35cb8`.
 - `ItemState` deserializer at `0x4530ba0` compares the strings `active`,
   `archived`, and `deleted`.
 - The item field dispatcher contains `uuid`, `favIndex`, `categoryUuid`,
-  `trashed`, `state`, `overview`, `details`, `createdAt`, `updatedAt`.
+  `state`, `overview`, `details`, `createdAt`, `updatedAt`.  `InnerVaultItem`
+  has exactly eight fields.
+- The v3 `ItemDetails` field dispatcher has `htmlForm`, `loginFields`,
+  `notesPlain`, `sections`, `passwordHistory`, `password`, `passkey`, and
+  `documentAttributes`.
+- The v3 `ItemOverview` dispatcher has 16 fields, including `subtitle`
+  (alias `ainfo`), `icons`, `shortcut`, `locations`, `b5UserUUID`,
+  `watchtowerExclusions`, and `appIds`.
+- `DetailSection` has `title`, `name`, `fields`, `hideAddAnotherField`.
+- `DetailSectionField` has `title`, `id`, `value`, `guarded`, `multiline`,
+  `dontGenerate`, `indexAtSource`, `placeholder`, `inputTraits`,
+  `clipboardFilter`; input traits are `keyboard`, `correction`,
+  `capitalization`.
+- `DocumentAttributes` has nine fields; the plaintext 1PUX export uses
+  `fileName`, `documentId`, and `decryptedSize`.
 
 The exporter therefore writes:
 
 ```text
-export.attributes = {version: 3, description: "1Password Unencrypted Export", createdAt}
+export.attributes = {version: 3, description: "1Password Unencrypted Export", timestamp}
 export.data       = {accounts: [{attrs, vaults: [{attrs, items: [...]}]}]}
 files/            = optional decrypted documents
 ```

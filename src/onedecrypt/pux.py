@@ -1,9 +1,15 @@
-"""Build a 1PUX (1Password Unencrypted Export) archive from decrypted rows.
+"""Build an official-schema 1PUX v3 archive from decrypted B5 rows.
 
-The 1PUX container is a ZIP with ``export.attributes``, ``export.data`` and an
-optional ``files/`` directory.  The item bodies are the decrypted B5 item
-details/overview; we only translate the outer camelCase wrapper and the
-legacy ``fields`` -> ``loginFields`` spelling used by 1PUX for Login items.
+The serializer follows the desktop exporter's
+``op_import_export::models::translation::onepux::v3`` structures.  In
+particular:
+
+* ``InnerVaultItem`` has exactly eight fields (no ``trashed``/``changerUuid``).
+* ``ItemDetails`` has eight fields and uses long-form section fields.
+* ``ItemOverview`` has the full v3 field set.
+* ``export.attributes`` uses ``timestamp`` (not the doc example's
+  ``createdAt``).
+* Passkeys are excluded, matching the official 1PUX policy.
 """
 
 from __future__ import annotations
@@ -13,18 +19,20 @@ import time
 import warnings
 import zipfile
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 from .crypto import DecryptionError
 from .database import Account, Item, Vault
 from .documents import extract_document
+from .pux_schema import validate_export_data, validate_attributes
 
-# Database item state is an integer.  The desktop SQL uses
-# ``data ->> '$.state' = 0`` for active items and ``!= 0`` for inactive ones;
-# the other values distinguish archived (1) from deleted/trashed (2).
 STATE_ACTIVE = 0
 STATE_ARCHIVED = 1
 STATE_DELETED = 2
+
+_FIELD_BOOLS = {"guarded", "multiline", "dontGenerate"}
+_FIELD_INTS = {"indexAtSource"}
+_FIELD_STRINGS = {"placeholder", "clipboardFilter"}
 
 
 def item_state(value: object) -> str:
@@ -33,6 +41,28 @@ def item_state(value: object) -> str:
     if value == STATE_DELETED:
         return "deleted"
     return "active"
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"yes", "true", "1", "y", "on"}
+    return False
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
 
 
 def _value_to_text(value: object) -> str:
@@ -50,118 +80,264 @@ def _value_to_text(value: object) -> str:
     return str(value)
 
 
-def _convert_fields(fields: Iterable[dict]) -> list[dict]:
-    converted = []
-    for field in fields:
-        if not isinstance(field, dict):
+def _typed_value(kind: str | None, value: object) -> object:
+    if isinstance(value, dict):
+        return value
+    if kind:
+        # B5 SectionFieldValue is a tagged object; the 1PUX importer accepts
+        # the same tagged shape.  Keep unknown tags as-is so no data is lost.
+        return {kind: value}
+    return value
+
+
+def _convert_input_traits(traits: object) -> dict:
+    if not isinstance(traits, dict):
+        return {}
+    result = {}
+    if "keyboard" in traits:
+        result["keyboard"] = str(traits["keyboard"])
+    correction = traits.get("correction", traits.get("autocorrection"))
+    capitalization = traits.get("capitalization", traits.get("autocapitalization"))
+    if correction is not None:
+        result["correction"] = str(correction)
+    if capitalization is not None:
+        result["capitalization"] = str(capitalization)
+    return result
+
+
+def _convert_section_field(field: object) -> dict | None:
+    if not isinstance(field, dict):
+        return None
+    title = field.get("title", field.get("t", ""))
+    field_id = field.get("id", field.get("n", ""))
+    kind = field.get("k")
+    if "value" in field:
+        value = field["value"]
+    elif "v" in field:
+        value = _typed_value(kind, field["v"])
+    else:
+        value = None
+
+    result: dict[str, Any] = {"title": str(title or ""), "id": str(field_id or "")}
+    if value is not None:
+        result["value"] = value
+
+    attributes = field.get("a")
+    if not isinstance(attributes, dict):
+        attributes = {}
+    for key in ("guarded", "multiline", "dontGenerate"):
+        if key in field:
+            result[key] = _as_bool(field[key])
+        elif key in attributes:
+            result[key] = _as_bool(attributes[key])
+    if "indexAtSource" in field:
+        parsed = _as_int(field["indexAtSource"])
+        if parsed is not None:
+            result["indexAtSource"] = parsed
+    elif "indexAtSource" in attributes:
+        parsed = _as_int(attributes["indexAtSource"])
+        if parsed is not None:
+            result["indexAtSource"] = parsed
+    for key in ("placeholder", "clipboardFilter"):
+        if key in field:
+            result[key] = str(field[key])
+        elif key in attributes:
+            result[key] = str(attributes[key])
+
+    input_traits = field.get("inputTraits")
+    if input_traits is None:
+        input_traits = attributes.get("inputTraits")
+    converted_traits = _convert_input_traits(input_traits)
+    if converted_traits:
+        result["inputTraits"] = converted_traits
+    return result
+
+
+def _convert_section(section: object) -> dict | None:
+    if not isinstance(section, dict):
+        return None
+    result: dict[str, Any] = {}
+    if "title" in section:
+        result["title"] = str(section["title"])
+    if "name" in section:
+        result["name"] = str(section["name"])
+    fields = section.get("fields")
+    if isinstance(fields, list):
+        result["fields"] = [f for f in (_convert_section_field(item) for item in fields) if f]
+    else:
+        result["fields"] = []
+    hidden = section.get("hideAddAnotherField")
+    if hidden is None and isinstance(section.get("attributes"), dict):
+        hidden = section["attributes"].get("hideAddAnotherField")
+    if hidden is not None:
+        result["hideAddAnotherField"] = _as_bool(hidden)
+    return result
+
+
+def _convert_login_field(field: object) -> dict | None:
+    if not isinstance(field, dict):
+        return None
+    field_type = field.get("fieldType", field.get("type", field.get("t", "T")))
+    result = {
+        "value": _value_to_text(field.get("value", field.get("v", ""))),
+        "id": str(field.get("id", "") or ""),
+        "name": str(field.get("name", field.get("n", "")) or ""),
+        "fieldType": str(field_type or "T"),
+    }
+    designation = field.get("designation")
+    if designation in ("username", "password"):
+        result["designation"] = designation
+    return result
+
+
+def _convert_login_fields(fields: object) -> list[dict]:
+    if not isinstance(fields, list):
+        return []
+    return [f for f in (_convert_login_field(item) for item in fields) if f]
+
+
+def _convert_html_form(form: object) -> dict | None:
+    if not isinstance(form, dict):
+        return None
+    result = {}
+    for key in ("htmlMethod", "htmlAction", "htmlID", "htmlName"):
+        if key in form:
+            result[key] = str(form[key])
+        elif key == "htmlID" and "htmlId" in form:
+            result[key] = str(form["htmlId"])
+    return result or None
+
+
+def _convert_password_history(history: object) -> list[dict]:
+    if not isinstance(history, list):
+        return []
+    result = []
+    for entry in history:
+        if not isinstance(entry, dict):
             continue
-        value = field.get("value", field.get("v"))
-        converted.append(
-            {
-                "value": _value_to_text(value),
-                "id": field.get("id", field.get("fieldId", "")),
-                "name": field.get("name", field.get("n", "")),
-                "fieldType": field.get("fieldType", field.get("type", field.get("t", "T"))),
-                **(
-                    {"designation": field["designation"]}
-                    if field.get("designation") in ("username", "password")
-                    else {}
-                ),
-            }
-        )
-    return converted
+        value = entry.get("value", entry.get("v"))
+        timestamp = entry.get("time", entry.get("t"))
+        if value is None or timestamp is None:
+            continue
+        result.append({"value": _value_to_text(value), "time": _as_int(timestamp) or 0})
+    return result
+
+
+def _convert_document_attributes(attrs: object, document_size: int | None) -> dict | None:
+    if not isinstance(attrs, dict):
+        return None
+    document_id = attrs.get("documentId") or attrs.get("document_id")
+    if not document_id:
+        return None
+    size = document_size
+    if size is None:
+        size = attrs.get("decryptedSize")
+    if size is None:
+        size = attrs.get("unencryptedSize")
+    result = {
+        "fileName": str(attrs.get("fileName") or attrs.get("file_name") or document_id),
+        "documentId": str(document_id),
+    }
+    parsed_size = _as_int(size)
+    if parsed_size is not None:
+        result["decryptedSize"] = parsed_size
+    return result
 
 
 def _normalize_details(
     details: dict, category_uuid: str, document_size: int | None = None
 ) -> dict:
-    """Translate the decrypted B5 details into the 1PUX details shape."""
+    """Convert decrypted B5 details into the official v3 ItemDetails shape."""
     if not isinstance(details, dict):
         return {}
-    result = dict(details)
+    result: dict[str, Any] = {}
 
-    document_attributes = result.get("documentAttributes")
-    if isinstance(document_attributes, dict):
-        # The B5 record carries the per-file AES key, nonce and integrity hash
-        # so the local file can be decrypted.  Those are not part of a 1PUX
-        # document reference; keep only the fields the importer needs.
-        clean = {
-            "fileName": document_attributes.get("fileName", ""),
-            "documentId": document_attributes.get("documentId", ""),
-        }
-        size = document_size
-        if size is None:
-            size = document_attributes.get("unencryptedSize")
-        if size is None:
-            size = document_attributes.get("decryptedSize")
-        if size is not None:
-            clean["decryptedSize"] = size
-        result["documentAttributes"] = clean
+    html_form = _convert_html_form(details.get("htmlForm"))
+    if html_form:
+        result["htmlForm"] = html_form
 
-    login_fields = result.get("loginFields")
-    if isinstance(login_fields, list):
-        result["loginFields"] = _convert_fields(login_fields)
-        if category_uuid in ("001", "005"):
-            result.pop("fields", None)
-        if category_uuid == "005":
-            result.pop("password", None)
-    elif category_uuid == "001" and isinstance(result.get("fields"), list):
-        result["loginFields"] = _convert_fields(result["fields"])
-        # The B5 login field array is called ``fields``; 1PUX importers use
-        # ``loginFields``.  Keep ``fields`` only for non-login categories.
-        result.pop("fields", None)
-    elif category_uuid == "005" and isinstance(result.get("password"), str):
-        result["loginFields"] = [
-            {
-                "value": result["password"],
-                "id": "",
-                "name": "password",
-                "fieldType": "P",
-                "designation": "password",
-            }
-        ]
-        result.pop("password", None)
+    login_fields = _convert_login_fields(
+        details.get("loginFields") or details.get("fields")
+    )
+    if login_fields:
+        result["loginFields"] = login_fields
 
-    sections = result.get("sections")
+    notes = details.get("notesPlain")
+    if isinstance(notes, str) and notes:
+        result["notesPlain"] = notes
+
+    sections = details.get("sections")
     if isinstance(sections, list):
-        clean_sections = []
-        for section in sections:
-            if not isinstance(section, dict):
-                continue
-            section = dict(section)
-            fields = section.get("fields")
-            if isinstance(fields, list):
-                clean_fields = []
-                for field in fields:
-                    if not isinstance(field, dict):
-                        continue
-                    field = dict(field)
-                    if "fieldType" not in field and "type" in field:
-                        field["fieldType"] = field["type"]
-                    clean_fields.append(field)
-                section["fields"] = clean_fields
-            clean_sections.append(section)
-        result["sections"] = clean_sections
+        converted_sections = [s for s in (_convert_section(item) for item in sections) if s]
+        if converted_sections:
+            result["sections"] = converted_sections
+
+    history = _convert_password_history(details.get("passwordHistory"))
+    if history:
+        result["passwordHistory"] = history
+
+    password = details.get("password")
+    if isinstance(password, str) and password:
+        result["password"] = password
+
+    document_attributes = _convert_document_attributes(
+        details.get("documentAttributes"), document_size
+    )
+    if document_attributes:
+        result["documentAttributes"] = document_attributes
+
+    # Official 1PUX intentionally excludes passkeys.
+    return result
+
+
+def _convert_url(url: object) -> dict | None:
+    if not isinstance(url, dict):
+        return None
+    target = url.get("url", url.get("u", ""))
+    if not target:
+        return None
+    result = {"label": str(url.get("label", url.get("l", "")) or ""), "url": str(target)}
+    mode = url.get("mode")
+    if mode:
+        result["mode"] = str(mode)
     return result
 
 
 def _normalize_overview(overview: dict, details: dict, category_uuid: str) -> dict:
     source = overview if isinstance(overview, dict) else {}
-    result = {
-        key: source[key]
-        for key in ("title", "url", "urls", "tags", "ps", "pbe", "pgrng")
-        if key in source
-    }
+    result: dict[str, Any] = {"title": str(source.get("title", "") or "")}
+
+    url = source.get("url")
+    if url:
+        result["url"] = str(url)
+    urls = source.get("urls")
+    if isinstance(urls, list):
+        converted_urls = [u for u in (_convert_url(item) for item in urls) if u]
+        if converted_urls:
+            result["urls"] = converted_urls
+    tags = source.get("tags")
+    if isinstance(tags, list) and tags:
+        result["tags"] = [str(tag) for tag in tags]
+    for key in ("ps", "pbe", "pgrng"):
+        if key in source and source[key] is not None:
+            result[key] = source[key]
+
     subtitle = source.get("subtitle") or source.get("ainfo") or ""
     if not subtitle and category_uuid in ("001", "005"):
         for field in details.get("loginFields", []):
             if field.get("designation") == "username":
                 subtitle = field.get("value") or ""
                 break
-    result["subtitle"] = subtitle
-    for key in ("urls", "tags"):
-        if result.get(key) is None:
-            result[key] = []
+    if subtitle:
+        result["subtitle"] = str(subtitle)
+
+    for key in ("icons", "shortcut", "locations", "b5UserUUID", "watchtowerExclusions", "appIds"):
+        if key not in source or source[key] in (None, [], {}):
+            continue
+        if key == "icons" and not isinstance(source[key], dict):
+            continue
+        result[key] = source[key]
+    # passkeys and passkey metadata are intentionally not exported
     return result
 
 
@@ -170,40 +346,30 @@ def _normalize_item(item: Item, document_size: int | None = None) -> dict:
     category_uuid = str(data.get("category_uuid", ""))
     details = _normalize_details(item.details or {}, category_uuid, document_size)
     overview = _normalize_overview(item.overview or {}, details, category_uuid)
-    state = item_state(data.get("state"))
-    result = {
+    return {
         "uuid": item.uuid,
         "favIndex": 1 if data.get("is_favorite") else 0,
-        "createdAt": data.get("created_at", 0),
-        "updatedAt": data.get("updated_at", 0),
-        "state": state,
-        # Legacy 1PIF flag: N = normal, D = deleted.  Archived items are not
-        # "trashed"; the 1PUX ``state`` field carries the archive distinction.
-        "trashed": "D" if state == "deleted" else "N",
+        "createdAt": _as_int(data.get("created_at")) or 0,
+        "updatedAt": _as_int(data.get("updated_at")) or 0,
+        "state": item_state(data.get("state")),
         "categoryUuid": category_uuid,
         "details": details,
         "overview": overview,
     }
-    if "changer_uuid" in data:
-        result["changerUuid"] = data["changer_uuid"]
-    if "scope" in data:
-        result["scope"] = data["scope"]
-    return result
 
 
 def _normalize_vault(vault: Vault) -> dict:
     attrs = dict(vault.attrs or {})
-    vault_type = vault.type or attrs.get("type") or "U"
-    attrs["uuid"] = vault.uuid
-    if not attrs.get("name"):
-        attrs["name"] = f"Vault {vault.uuid[:6]}"
-    attrs.setdefault("desc", attrs.get("description", ""))
-    attrs.setdefault("avatar", attrs.get("icon", "") if isinstance(attrs.get("icon"), str) else "")
-    # 1PUX only defines P (personal), E (everyone/shared) and U (user-created).
-    # Hidden/generated/shared system vaults are exported as user-created so the
-    # items are not dropped by an importer.
-    attrs["type"] = vault_type if vault_type in ("P", "E", "U") else "U"
-    return attrs
+    name = attrs.get("name") or f"Vault {vault.uuid[:6]}"
+    desc = attrs.get("desc", attrs.get("description", ""))
+    avatar = attrs.get("avatar", attrs.get("icon", "") if isinstance(attrs.get("icon"), str) else "")
+    return {
+        "uuid": vault.uuid,
+        "desc": str(desc or ""),
+        "avatar": str(avatar or ""),
+        "name": str(name),
+        "type": str(vault.type or "U"),
+    }
 
 
 def _normalize_account(account: Account) -> dict:
@@ -228,7 +394,6 @@ def build_export_data(
     files: dict[str, bytes] = {}
     for vault in account.vaults:
         if vault.key is None:
-            # Vault key could not be unlocked; its items are ciphertext only.
             continue
         items = []
         for item in vault.items:
@@ -249,6 +414,7 @@ def build_export_data(
                     files[f"files/{document_id}___{file_name}"] = content
         vaults.append({"attrs": _normalize_vault(vault), "items": items})
     data = {"accounts": [{"attrs": _normalize_account(account), "vaults": vaults}]}
+    validate_export_data(data)
     return data, files
 
 
@@ -257,14 +423,15 @@ def write_1pux(
     account: Account,
     files_dir: Path | None = None,
 ) -> tuple[Path, int, int]:
-    """Write a 1PUX file and return (path, item_count, file_count)."""
+    """Write an official-schema 1PUX file."""
     path = Path(path)
     data, files = build_export_data(account, files_dir)
     attributes = {
         "version": 3,
         "description": "1Password Unencrypted Export",
-        "createdAt": int(time.time()),
+        "timestamp": int(time.time()),
     }
+    validate_attributes(attributes)
     path.parent.mkdir(parents=True, exist_ok=True)
     item_count = sum(len(v["items"]) for v in data["accounts"][0]["vaults"])
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -272,7 +439,6 @@ def write_1pux(
         zf.writestr("export.data", json.dumps(data, ensure_ascii=False, indent=2))
         for name, content in files.items():
             zf.writestr(name, content)
-    # A 1PUX is a plaintext password dump; do not leave it world-readable.
     try:
         path.chmod(0o600)
     except OSError:

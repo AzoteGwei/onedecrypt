@@ -76,10 +76,11 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
   `src/onedecrypt/pux.py`.  All items are exported either way.
 - Documents are only included if the encrypted blobs are present under the
   local `files/` cache.  The tool cannot download missing attachments.
-- The 1PUX exporter is a reconstruction from the documented format and the
-  decrypted B5 item bodies.  It does not reproduce every desktop-only
-  decoration (custom icon files, for example), but preserves item fields,
-  notes, sections, URLs, tags, password history, and document metadata.
+- The 1PUX exporter follows the official v3 schema recovered from the
+  desktop core: exactly eight item fields, the full item details/overview
+  key sets, long-form section fields, and `export.attributes.timestamp`.
+  Passkeys are deliberately excluded, matching the official 1PUX policy.
+  Custom icon files are not exported.
 
 ## Security
 
