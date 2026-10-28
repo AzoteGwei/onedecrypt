@@ -141,8 +141,8 @@ def _validate_login_fields(fields: Any, where: str) -> None:
         _keys(field, LOGIN_FIELD_KEYS, f"{where}.loginFields[{index}]", required={"value", "fieldType"})
         _require(isinstance(field["value"], str), f"{where}.loginFields[{index}].value must be a string")
         _require(
-            field["fieldType"] in {"T", "E", "U", "N", "P", "A", "TEL"},
-            f"{where}: unsupported login fieldType",
+            isinstance(field["fieldType"], str),
+            f"{where}.loginFields[{index}].fieldType must be a string",
         )
         if "designation" in field:
             _require(

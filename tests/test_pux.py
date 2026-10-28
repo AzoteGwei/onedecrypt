@@ -129,6 +129,20 @@ def test_short_section_fields_are_converted():
     assert "ainfo" not in overview
 
 
+def test_login_field_type_is_not_restricted_to_a_short_enum():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "loginFields": [
+            {"value": "u", "name": "username", "fieldType": "D", "designation": "username"}
+        ]
+    }
+    data, _ = build_export_data(account)
+    field = data["accounts"][0]["vaults"][0]["items"][0]["details"]["loginFields"][0]
+    assert field["fieldType"] == "D"
+
+
 def test_passkeys_follow_profile_capabilities():
     account = synthetic_account()
     account.vaults[0].key = b"x" * 32
