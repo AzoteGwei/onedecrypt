@@ -1,0 +1,1106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onedecrypt.invalid/schema/1pux-exporter.schema.json",
+  "title": "1PUX v3 export.data (exporter profile)",
+  "description": "JSON Schema for the ``export.data`` entry of a 1PUX ZIP archive. Fields emitted by the official v3 exporter. In the current matrix this is the same canonical field set as the official profile: the exporter does not emit passkeys, and appIds exists only in the local database. Avatar/icon fields are included when the corresponding files are present in the ZIP. See docs/schema/README.md for the ZIP layout and the companion ``export.attributes`` schema.",
+  "$comment": "Recovered from the shipped 1Password desktop core (op_import_export::models::translation::onepux::v2/v3). Primary importer visitors: 0x4740aa0 (ItemDetails), 0x4740d10 (ItemOverview), 0x4740760 (DetailSection), 0x47414a0 (DetailSectionField), 0x4740830 (DocumentAttributes), 0x47412e0 (LoginField), 0x4740370 (OverviewUrl), 0x4740fd0 (SectionFieldValue). Primary exporter path: 0x4c4fb70 (onepux::export closure) and 0x6173620 (ItemDetails::from). File entries use ``files/<documentId>__<fileName>`` (two underscores); the format string is at 0x11f79ac, its call site is 0x4c52c4a, and the importer lookup is 0x4535aae.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "accounts"
+  ],
+  "properties": {
+    "accounts": {
+      "type": "array",
+      "description": "Accounts in the export.",
+      "items": {
+        "$ref": "#/$defs/Account"
+      }
+    }
+  },
+  "$defs": {
+    "ExportAttributes": {
+      "type": "object",
+      "description": "Contents of the ``export.attributes`` ZIP entry. This object is not part of ``export.data``; it is documented here because both files belong to the same 1PUX archive.",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "1PUX schema version. The v3 exporter writes 3.",
+          "const": 3
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable format description.",
+          "const": "1Password Unencrypted Export"
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Export creation time. Recovered from the v3 exporter, which writes ``timestamp`` rather than the ``createdAt`` spelling used by the public format documentation."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "description",
+        "timestamp"
+      ],
+      "$comment": "Recovered from op_import_export::models::translation::onepux::v3. The public 1PUX page shows createdAt, while the shipped exporter writes timestamp. No createdAt property is declared here because the importer's acceptance of that spelling was not proven from the binary."
+    },
+    "AccountAttrs": {
+      "type": "object",
+      "description": "Account-level attributes stored under ``accounts[].attrs``.",
+      "properties": {
+        "accountName": {
+          "type": "string",
+          "description": "Display name of the account/team as shown by the official exporter."
+        },
+        "name": {
+          "type": "string",
+          "description": "Account owner or team name."
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Filename of the account avatar inside the ZIP ``files/`` directory. An empty string means no avatar. onedecrypt clears this field in canonical profiles because it does not export the avatar blob."
+        },
+        "email": {
+          "type": "string",
+          "description": "Account email address.",
+          "format": "email"
+        },
+        "uuid": {
+          "type": "string",
+          "description": "1Password object identifier. The official exporter writes the usual 26-character lowercase base32 identifier; the importer treats it as an opaque string, so this schema does not impose a pattern."
+        },
+        "domain": {
+          "type": "string",
+          "description": "Account sign-in URL, for example https://my.1password.com/.",
+          "format": "uri-reference"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "accountName",
+        "name",
+        "email",
+        "domain"
+      ]
+    },
+    "VaultAttrs": {
+      "type": "object",
+      "description": "Vault-level attributes stored under ``vaults[].attrs``.",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "description": "1Password object identifier. The official exporter writes the usual 26-character lowercase base32 identifier; the importer treats it as an opaque string, so this schema does not impose a pattern."
+        },
+        "desc": {
+          "type": "string",
+          "description": "Vault description; empty string when not set."
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Filename of the vault avatar inside the ZIP ``files/`` directory. An empty string means no avatar. onedecrypt clears this field in canonical profiles because it does not export the avatar blob."
+        },
+        "name": {
+          "type": "string",
+          "description": "Vault name."
+        },
+        "type": {
+          "type": "string",
+          "description": "Vault type. P = Personal/Private, E = Everyone/Shared, U = user-created vault. The exporter can also emit T (team), S (shared), G (guest), M (managed) and D (default). onedecrypt canonical profiles map values outside P/E/U to U.",
+          "enum": [
+            "P",
+            "E",
+            "T",
+            "U",
+            "S",
+            "G",
+            "M",
+            "D",
+            "Unsupported"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "desc",
+        "name",
+        "type"
+      ]
+    },
+    "Account": {
+      "type": "object",
+      "description": "One account inside the export.",
+      "properties": {
+        "attrs": {
+          "$ref": "#/$defs/AccountAttrs"
+        },
+        "vaults": {
+          "type": "array",
+          "description": "Vaults in this account.",
+          "items": {
+            "$ref": "#/$defs/Vault"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attrs",
+        "vaults"
+      ]
+    },
+    "Vault": {
+      "type": "object",
+      "description": "One vault inside an account.",
+      "properties": {
+        "attrs": {
+          "$ref": "#/$defs/VaultAttrs"
+        },
+        "items": {
+          "type": "array",
+          "description": "Items in this vault.",
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attrs",
+        "items"
+      ]
+    },
+    "Item": {
+      "type": "object",
+      "description": "One item inside a vault (``vaults[].items[]``).",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "description": "1Password object identifier. The official exporter writes the usual 26-character lowercase base32 identifier; the importer treats it as an opaque string, so this schema does not impose a pattern."
+        },
+        "favIndex": {
+          "type": "integer",
+          "description": "0 means not a favorite; greater than 0 means favorite.",
+          "minimum": 0
+        },
+        "createdAt": {
+          "type": "integer",
+          "description": "Unix timestamp in seconds."
+        },
+        "updatedAt": {
+          "type": "integer",
+          "description": "Unix timestamp in seconds."
+        },
+        "state": {
+          "type": "string",
+          "description": "Item state. The v3 serializer maps 0, 1, 2 to active, archived and deleted; the importer accepts all three. onedecrypt's official/exporter policy skips trashed items during extraction, so those profiles normally contain only active/archived even though the format can represent deleted.",
+          "enum": [
+            "active",
+            "archived",
+            "deleted"
+          ]
+        },
+        "categoryUuid": {
+          "type": "string",
+          "description": "Item category identifier. Known values include 001 Login, 002 Credit Card, 003 Secure Note, 004 Identity, 005 Password, 006 Document, 100 Software License, 114 SSH Key and 115 Crypto Wallet.",
+          "examples": [
+            "001",
+            "002",
+            "005",
+            "006",
+            "114"
+          ]
+        },
+        "details": {
+          "$ref": "#/$defs/ItemDetails"
+        },
+        "overview": {
+          "$ref": "#/$defs/ItemOverview"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uuid",
+        "favIndex",
+        "createdAt",
+        "updatedAt",
+        "state",
+        "categoryUuid",
+        "details",
+        "overview"
+      ],
+      "$comment": "v3 InnerVaultItem field order: uuid, favIndex, createdAt, updatedAt, state, categoryUuid, details, overview."
+    },
+    "ItemDetails": {
+      "type": "object",
+      "description": "Item details (``items[].details``). Every field is optional; a Document item typically has only documentAttributes, and a Password item typically has only password.",
+      "properties": {
+        "loginFields": {
+          "type": "array",
+          "description": "Saved web-form/login fields.",
+          "items": {
+            "$ref": "#/$defs/LoginField"
+          }
+        },
+        "notesPlain": {
+          "type": "string",
+          "description": "Free-form notes; markdown formatting is preserved."
+        },
+        "sections": {
+          "type": "array",
+          "description": "Custom/structured item sections.",
+          "items": {
+            "$ref": "#/$defs/DetailSection"
+          }
+        },
+        "passwordHistory": {
+          "type": "array",
+          "description": "Previous passwords, ordered oldest first.",
+          "items": {
+            "$ref": "#/$defs/PasswordHistoryEntry"
+          }
+        },
+        "documentAttributes": {
+          "$ref": "#/$defs/DocumentAttributes",
+          "description": "Document reference for Document items (categoryUuid 006)."
+        },
+        "password": {
+          "type": "string",
+          "description": "Password value for Password items (categoryUuid 005), which have no loginFields."
+        },
+        "htmlForm": {
+          "$ref": "#/$defs/DetailHtmlForm"
+        }
+      },
+      "additionalProperties": false,
+      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes."
+    },
+    "ItemOverview": {
+      "type": "object",
+      "description": "Item overview (``items[].overview``). The official exporter emits the canonical keys; the importer additionally accepts several legacy spellings.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Item title shown in the item list."
+        },
+        "url": {
+          "type": "string",
+          "description": "Primary URL, if any.",
+          "format": "uri-reference"
+        },
+        "urls": {
+          "type": "array",
+          "description": "All URLs associated with the item.",
+          "items": {
+            "$ref": "#/$defs/OverviewUrl"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "description": "Item tags.",
+          "items": {
+            "type": "string",
+            "description": "Tag value."
+          }
+        },
+        "ps": {
+          "type": "integer",
+          "description": "Password strength score emitted by 1Password. The UI normally shows 0-100; the field is not range-checked by the importer."
+        },
+        "pbe": {
+          "type": "number",
+          "description": "Password breach/entropy estimate emitted by 1Password."
+        },
+        "pgrng": {
+          "type": "boolean",
+          "description": "Password generator range/flag emitted by 1Password."
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Generated subtitle, usually the username or a short summary."
+        },
+        "icons": {
+          "type": "object",
+          "description": "Custom icon map keyed by icon slot. The official exporter writes the referenced files under ``files/``; onedecrypt omits the map because it does not export those blobs.",
+          "additionalProperties": {
+            "$ref": "#/$defs/IconKey"
+          }
+        },
+        "shortcut": {
+          "$ref": "#/$defs/ItemShortcut"
+        },
+        "locations": {
+          "type": "array",
+          "description": "Locations associated with the item.",
+          "items": {
+            "description": "Location object.",
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "b5UserUuid": {
+          "type": "string",
+          "description": "B5 user UUID. The official importer accepts both this spelling and ``b5UserUUID``."
+        },
+        "b5UserUUID": {
+          "type": "string",
+          "description": "Alias spelling of ``b5UserUuid`` accepted by the official importer."
+        },
+        "watchtowerExclusions": {
+          "description": "Watchtower exclusions. The exporter writes null when there are none, otherwise an object of boolean exclusion flags.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/WatchtowerExclusions"
+            }
+          ]
+        },
+        "migrationDestination": {
+          "$ref": "#/$defs/MigrationDestination",
+          "description": "Migration destination emitted by the official exporter."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ],
+      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. appIds is local-only."
+    },
+    "ItemShortcut": {
+      "type": "object",
+      "description": "Keyboard shortcut associated with the item. The exporter models this as a struct with ``value`` and ``case_sensitive`` rather than a bare string.",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "Shortcut key/value."
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "description": "Whether the shortcut is case-sensitive."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
+    },
+    "WatchtowerExclusions": {
+      "type": "object",
+      "description": "Watchtower exclusions object. The exporter writes null instead of this object when there are no exclusions; each boolean field selects one Watchtower check.",
+      "properties": {
+        "compromised": {
+          "type": "boolean",
+          "description": "Whether the compromised Watchtower check is excluded."
+        },
+        "vulnerable": {
+          "type": "boolean",
+          "description": "Whether the vulnerable Watchtower check is excluded."
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "Whether the reused Watchtower check is excluded."
+        },
+        "weak": {
+          "type": "boolean",
+          "description": "Whether the weak Watchtower check is excluded."
+        },
+        "unsecured": {
+          "type": "boolean",
+          "description": "Whether the unsecured Watchtower check is excluded."
+        },
+        "inactiveMfa": {
+          "type": "boolean",
+          "description": "Whether the inactiveMfa Watchtower check is excluded."
+        },
+        "expiring": {
+          "type": "boolean",
+          "description": "Whether the expiring Watchtower check is excluded."
+        },
+        "lastpass": {
+          "type": "boolean",
+          "description": "Whether the lastpass Watchtower check is excluded."
+        },
+        "wrongAccount": {
+          "type": "boolean",
+          "description": "Whether the wrongAccount Watchtower check is excluded."
+        },
+        "passkeyAvailable": {
+          "type": "boolean",
+          "description": "Whether the passkeyAvailable Watchtower check is excluded."
+        },
+        "duplicateItem": {
+          "type": "boolean",
+          "description": "Whether the duplicateItem Watchtower check is excluded."
+        },
+        "conflictingShortcut": {
+          "type": "boolean",
+          "description": "Whether the conflictingShortcut Watchtower check is excluded."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "compromised",
+        "vulnerable",
+        "reused",
+        "weak",
+        "unsecured",
+        "inactiveMfa",
+        "expiring",
+        "lastpass",
+        "wrongAccount",
+        "passkeyAvailable",
+        "duplicateItem",
+        "conflictingShortcut"
+      ]
+    },
+    "MigrationDestination": {
+      "type": "object",
+      "description": "Migration destination emitted by the exporter for items that were migrated from another account.",
+      "properties": {
+        "itemUuid": {
+          "type": "string",
+          "description": "Destination item UUID."
+        },
+        "accountUuid": {
+          "type": "string",
+          "description": "Destination account UUID."
+        },
+        "vaultUuid": {
+          "type": "string",
+          "description": "Destination vault UUID."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "itemUuid",
+        "accountUuid",
+        "vaultUuid"
+      ]
+    },
+    "LoginField": {
+      "type": "object",
+      "description": "A web-form/login field. The official exporter writes ``value``, ``id``, ``name`` and ``fieldType``; ``designation`` is optional.",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "Field value."
+        },
+        "id": {
+          "type": "string",
+          "description": "Field identifier; may be empty for template-driven fields."
+        },
+        "name": {
+          "type": "string",
+          "description": "HTML form field name; may be empty."
+        },
+        "fieldType": {
+          "type": "string",
+          "description": "Free-form HTML input type. The official importer does not constrain this to the T/E/U/N/P/A/TEL list shown in older documentation; real vaults contain other values such as D or C.",
+          "examples": [
+            "T",
+            "P",
+            "D",
+            "C"
+          ]
+        },
+        "designation": {
+          "type": "string",
+          "description": "Semantic role of a login field. At most one field should be ``username`` and at most one ``password``.",
+          "enum": [
+            "username",
+            "password"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "fieldType"
+      ],
+      "$comment": "ItemDetails.loginFields is Vec<LoginField>. The importer's visit_str accepts value/id/name/fieldType/type/designation."
+    },
+    "DetailSection": {
+      "type": "object",
+      "description": "One group of item fields (``details.sections[]``).",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Section heading shown to the user."
+        },
+        "name": {
+          "type": "string",
+          "description": "Stable section identifier within the item."
+        },
+        "fields": {
+          "type": "array",
+          "description": "Fields in this section. The official exporter always writes an array, possibly empty.",
+          "items": {
+            "$ref": "#/$defs/DetailSectionField"
+          }
+        },
+        "hideAddAnotherField": {
+          "type": "boolean",
+          "description": "Whether the UI should hide the 'add another field' affordance."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ],
+      "$comment": "DetailSection importer fields: title, name, fields, hideAddAnotherField."
+    },
+    "DetailSectionField": {
+      "type": "object",
+      "description": "One field inside a detail section. The official exporter emits long-form keys (title/id/value/...); short B5 keys are not part of the canonical profiles.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "User-visible field label."
+        },
+        "id": {
+          "type": "string",
+          "description": "Field identifier. Uniqueness is not guaranteed; template fields use template-provided identifiers."
+        },
+        "value": {
+          "$ref": "#/$defs/SectionFieldValue"
+        },
+        "guarded": {
+          "type": "boolean",
+          "description": "Whether the field is guarded/concealed."
+        },
+        "multiline": {
+          "type": "boolean",
+          "description": "Whether the field is multiline."
+        },
+        "dontGenerate": {
+          "type": "boolean",
+          "description": "Whether the password generator is disabled."
+        },
+        "indexAtSource": {
+          "type": "integer",
+          "description": "Original index of the field in its source form/section.",
+          "minimum": 0
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Placeholder text."
+        },
+        "inputTraits": {
+          "$ref": "#/$defs/InputTraits"
+        },
+        "clipboardFilter": {
+          "type": "string",
+          "description": "Clipboard filter hint."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "id"
+      ],
+      "$comment": "DetailSectionField importer fields: title, id, value, indexAtSource, guarded, multiline, clipboardFilter, dontGenerate, inputTraits, placeholder. keyboard/correction live inside inputTraits, not at the field level."
+    },
+    "SectionFieldValue": {
+      "description": "Section field value. The v3 1PUX schema uses an externally tagged enum object with exactly one type key. The full profile preserves raw local values instead.",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Postal address value. The concrete object is an op-model Address.",
+          "properties": {
+            "address": {
+              "description": "Address object.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "address"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Concealed/secret text.",
+          "properties": {
+            "concealed": {
+              "type": "string",
+              "description": "Concealed value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "concealed"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Credit-card number as text (the UI may store spaces or notes).",
+          "properties": {
+            "creditCardNumber": {
+              "type": "string",
+              "description": "Credit-card number."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "creditCardNumber"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Credit-card brand/type as text.",
+          "properties": {
+            "creditCardType": {
+              "type": "string",
+              "description": "Credit-card type."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "creditCardType"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Date value. The official model stores an epoch timestamp; older exports may use a string.",
+          "properties": {
+            "date": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "Date value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "date"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Email address.",
+          "properties": {
+            "email": {
+              "type": "string",
+              "description": "Email address.",
+              "format": "email"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "email"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Attachment reference. The importer reads the same DocumentAttributes shape used by document items, then loads ``files/<documentId>__<fileName>`` from the archive.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/DocumentAttributes"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Formatted text value.",
+          "properties": {
+            "formattedText": {
+              "description": "Formatted text object or string.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "formattedText"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Gender value.",
+          "properties": {
+            "gender": {
+              "type": "string",
+              "description": "Gender value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "gender"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Menu selection.",
+          "properties": {
+            "menu": {
+              "type": "string",
+              "description": "Menu value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "menu"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Managed-application credential value.",
+          "properties": {
+            "managedApplication": {
+              "description": "Managed application value.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "managedApplication"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Month/year value. The official model stores YYYYMM as an integer; older exports may use a string.",
+          "properties": {
+            "monthYear": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "Month/year value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "monthYear"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Phone number.",
+          "properties": {
+            "phone": {
+              "type": "string",
+              "description": "Phone number."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "phone"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Reference to another item/field.",
+          "properties": {
+            "reference": {
+              "description": "Reference object or string.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "reference"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "SSH key value.",
+          "properties": {
+            "sshKey": {
+              "description": "SSH key object or string.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "sshKey"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "SSO login value.",
+          "properties": {
+            "ssoLogin": {
+              "description": "SSO login object or string.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "ssoLogin"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "Plain string value.",
+          "properties": {
+            "string": {
+              "type": "string",
+              "description": "String value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "string"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "One-time-password secret/URI.",
+          "properties": {
+            "totp": {
+              "type": "string",
+              "description": "TOTP value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "totp"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "A value the importer could not classify. Preserved so no data is lost.",
+          "properties": {
+            "unsupported": {
+              "description": "Unsupported value.",
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "unsupported"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        },
+        {
+          "type": "object",
+          "description": "URL value.",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL value.",
+              "format": "uri-reference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "url"
+          ],
+          "$comment": "SectionFieldValue is an externally tagged enum: the JSON object has exactly one key, which selects the field type."
+        }
+      ]
+    },
+    "InputTraits": {
+      "type": "object",
+      "description": "Keyboard/autocorrection hints for a section field (``details.sections[].fields[].inputTraits``). Values are template strings, not booleans; the importer accepts free-form strings.",
+      "properties": {
+        "keyboard": {
+          "type": "string",
+          "description": "Keyboard type hint, e.g. default or numberPad."
+        },
+        "correction": {
+          "type": "string",
+          "description": "Autocorrection hint, e.g. default or no."
+        },
+        "capitalization": {
+          "type": "string",
+          "description": "Autocapitalization hint, e.g. default or sentences."
+        }
+      },
+      "additionalProperties": false
+    },
+    "DocumentAttributes": {
+      "type": "object",
+      "description": "A document reference. Document items carry this object at ``details.documentAttributes``; section attachments carry it at ``details.sections[].fields[].value.file``.",
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "description": "Original file name. The ZIP entry is ``files/<documentId>__<fileName>`` (two underscores)."
+        },
+        "documentId": {
+          "type": "string",
+          "description": "Document identifier. Together with fileName it forms the ZIP entry name."
+        },
+        "decryptedSize": {
+          "type": "integer",
+          "description": "Plaintext size in bytes.",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fileName",
+        "documentId"
+      ],
+      "$comment": "DocumentAttributes deserializer fields: fileName, documentId, signingKey, decryptedSize/unencryptedSize, encryptedSize, integrityHash, encryptionKey, nonce, uti."
+    },
+    "DetailHtmlForm": {
+      "type": "object",
+      "description": "Saved web-form metadata (``details.htmlForm``). The official exporter emits ``htmlId``; the importer accepts both ``htmlId`` and ``htmlID``.",
+      "properties": {
+        "htmlMethod": {
+          "type": "string",
+          "description": "HTML form method, for example POST."
+        },
+        "htmlAction": {
+          "type": "string",
+          "description": "HTML form action URL or path."
+        },
+        "htmlId": {
+          "type": "string",
+          "description": "HTML form id attribute. The shipped exporter writes ``htmlId`` (lower-case d)."
+        },
+        "htmlName": {
+          "type": "string",
+          "description": "HTML form name attribute."
+        }
+      },
+      "additionalProperties": false
+    },
+    "PasswordHistoryEntry": {
+      "type": "object",
+      "description": "One previous password. Entries are ordered oldest first; ``time`` is the moment that value stopped being current.",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "Previous password value."
+        },
+        "time": {
+          "type": "integer",
+          "description": "Unix timestamp in seconds."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "time"
+      ]
+    },
+    "OverviewUrl": {
+      "type": "object",
+      "description": "One entry of ``overview.urls``. The canonical spelling uses ``label``/``url``/``mode``.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Display label for the URL; empty string when unlabeled."
+        },
+        "url": {
+          "type": "string",
+          "description": "URL value.",
+          "format": "uri-reference"
+        },
+        "mode": {
+          "type": "string",
+          "description": "1Password URL matching mode, for example anywhereOnWebsite or exact.",
+          "examples": [
+            "anywhereOnWebsite",
+            "exact",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ]
+    },
+    "Passkey": {
+      "description": "Opaque passkey payload. The official 1PUX exporter does not emit passkeys; the importer model has a passkey field, so the importer and full profiles preserve the local value verbatim.",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "IconKey": {
+      "description": "Opaque icon reference. The official exporter can emit custom icon metadata and write the referenced file under ``files/``. onedecrypt omits custom icons because their blobs are not part of the local export cache.",
+      "type": [
+        "object",
+        "string"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

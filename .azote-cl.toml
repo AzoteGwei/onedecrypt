@@ -1,0 +1,2 @@
+[paths]
+generated = ["docs/schema/*.schema.json"]
