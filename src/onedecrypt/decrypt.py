@@ -41,17 +41,23 @@ def resolve_keysets(
     may sit behind a chain of such keysets.
     """
     resolved: dict[str, ResolvedKeyset] = {}
+    last_root_error: DecryptionError | None = None
 
     for keyset in keysets:
         if not keyset.is_root or keyset.enc_sym_key is None or keyset.enc_pri_key is None:
             continue
-        params = MukParams.from_jwe(keyset.enc_sym_key)
-        progress(
-            f"keyset {keyset.uuid}: deriving MUK ({params.alg}, {params.iterations} iterations)"
-        )
-        muk = derive_muk(secret_key, password, email, params)
-        sym_key = symmetric_key_from_jwk(jwe_decrypt(muk, keyset.enc_sym_key))
-        rsa_key = rsa_private_key_from_jwk(jwe_decrypt(sym_key, keyset.enc_pri_key))
+        try:
+            params = MukParams.from_jwe(keyset.enc_sym_key)
+            progress(
+                f"keyset {keyset.uuid}: deriving MUK ({params.alg}, {params.iterations} iterations)"
+            )
+            muk = derive_muk(secret_key, password, email, params)
+            sym_key = symmetric_key_from_jwk(jwe_decrypt(muk, keyset.enc_sym_key))
+            rsa_key = rsa_private_key_from_jwk(jwe_decrypt(sym_key, keyset.enc_pri_key))
+        except DecryptionError as exc:
+            last_root_error = exc
+            progress(f"keyset {keyset.uuid}: root unlock failed: {exc}")
+            continue
         resolved[keyset.uuid] = ResolvedKeyset(keyset, sym_key, rsa_key)
         progress(f"keyset {keyset.uuid}: unlocked root key")
 
@@ -64,26 +70,31 @@ def resolve_keysets(
             parent = resolved.get(keyset.encrypted_by)
             if parent is None:
                 continue
-            enc_sym = keyset.enc_sym_key
-            if enc_sym.get("enc", "").startswith("RSA-OAEP"):
-                payload = decrypt_jwe_with_rsa(parent.rsa_key, enc_sym)
-                sym_key = symmetric_key_from_jwk(payload)
-            elif enc_sym.get("enc") == "A256GCM":
-                sym_key = symmetric_key_from_jwk(jwe_decrypt(parent.sym_key, enc_sym))
-            else:
+            try:
+                enc_sym = keyset.enc_sym_key
+                if enc_sym.get("enc", "").startswith("RSA-OAEP"):
+                    payload = decrypt_jwe_with_rsa(parent.rsa_key, enc_sym)
+                    sym_key = symmetric_key_from_jwk(payload)
+                elif enc_sym.get("enc") == "A256GCM":
+                    sym_key = symmetric_key_from_jwk(jwe_decrypt(parent.sym_key, enc_sym))
+                else:
+                    continue
+                if keyset.enc_pri_key:
+                    rsa_key = rsa_private_key_from_jwk(jwe_decrypt(sym_key, keyset.enc_pri_key))
+                else:
+                    rsa_key = parent.rsa_key
+            except DecryptionError as exc:
+                progress(f"keyset {keyset.uuid}: unlock failed: {exc}")
                 continue
-            if keyset.enc_pri_key:
-                rsa_key = rsa_private_key_from_jwk(jwe_decrypt(sym_key, keyset.enc_pri_key))
-            else:
-                rsa_key = parent.rsa_key
             resolved[keyset.uuid] = ResolvedKeyset(keyset, sym_key, rsa_key)
             progress(f"keyset {keyset.uuid}: unlocked from {keyset.encrypted_by}")
             changed = True
 
     if not resolved:
+        detail = f" ({last_root_error})" if last_root_error else ""
         raise DecryptionError(
             "no root keyset could be unlocked; the Secret Key, password or account "
-            "selection is wrong"
+            f"selection is wrong{detail}"
         )
     return resolved
 

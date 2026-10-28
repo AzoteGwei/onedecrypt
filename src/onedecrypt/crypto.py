@@ -157,8 +157,8 @@ class MukParams:
         alg = jwe.get("alg")
         iterations = jwe.get("p2c")
         salt = jwe.get("p2s")
-        if not alg or not isinstance(iterations, int) or not salt:
-            raise DecryptionError("encrypted key is missing MUK parameters")
+        if not alg or not isinstance(iterations, int) or iterations <= 0 or not salt:
+            raise DecryptionError("encrypted key is missing valid MUK parameters")
         return cls(alg=alg, iterations=iterations, salt=salt)
 
     def salt_bytes(self) -> bytes:

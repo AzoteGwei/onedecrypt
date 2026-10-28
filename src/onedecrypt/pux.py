@@ -101,6 +101,10 @@ def _normalize_details(
     login_fields = result.get("loginFields")
     if isinstance(login_fields, list):
         result["loginFields"] = _convert_fields(login_fields)
+        if category_uuid in ("001", "005"):
+            result.pop("fields", None)
+        if category_uuid == "005":
+            result.pop("password", None)
     elif category_uuid == "001" and isinstance(result.get("fields"), list):
         result["loginFields"] = _convert_fields(result["fields"])
         # The B5 login field array is called ``fields``; 1PUX importers use
@@ -116,30 +120,45 @@ def _normalize_details(
                 "designation": "password",
             }
         ]
+        result.pop("password", None)
 
     sections = result.get("sections")
     if isinstance(sections, list):
+        clean_sections = []
         for section in sections:
             if not isinstance(section, dict):
                 continue
+            section = dict(section)
             fields = section.get("fields")
             if isinstance(fields, list):
+                clean_fields = []
                 for field in fields:
-                    if isinstance(field, dict) and "fieldType" not in field and "type" in field:
+                    if not isinstance(field, dict):
+                        continue
+                    field = dict(field)
+                    if "fieldType" not in field and "type" in field:
                         field["fieldType"] = field["type"]
+                    clean_fields.append(field)
+                section["fields"] = clean_fields
+            clean_sections.append(section)
+        result["sections"] = clean_sections
     return result
 
 
 def _normalize_overview(overview: dict, details: dict, category_uuid: str) -> dict:
-    result = dict(overview) if isinstance(overview, dict) else {}
-    if "subtitle" not in result:
-        subtitle = result.get("ainfo") or ""
-        if not subtitle and category_uuid in ("001", "005"):
-            for field in details.get("loginFields", []):
-                if field.get("designation") == "username":
-                    subtitle = field.get("value") or ""
-                    break
-        result["subtitle"] = subtitle
+    source = overview if isinstance(overview, dict) else {}
+    result = {
+        key: source[key]
+        for key in ("title", "url", "urls", "tags", "ps", "pbe", "pgrng")
+        if key in source
+    }
+    subtitle = source.get("subtitle") or source.get("ainfo") or ""
+    if not subtitle and category_uuid in ("001", "005"):
+        for field in details.get("loginFields", []):
+            if field.get("designation") == "username":
+                subtitle = field.get("value") or ""
+                break
+    result["subtitle"] = subtitle
     for key in ("urls", "tags"):
         if result.get(key) is None:
             result[key] = []
