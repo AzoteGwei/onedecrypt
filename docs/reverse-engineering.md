@@ -224,6 +224,56 @@ export.data       = {accounts: [{attrs, vaults: [{attrs, items: [...]}]}]}
 files/            = optional decrypted documents
 ```
 
+## 1PUX import path
+
+The official importer is the reverse direction of the same v3 models.  The
+relevant BN symbols are:
+
+| BN address | Symbol | Role |
+| --- | --- | --- |
+| `0x616c270` | `InnerVaultItem as IntoOpModel<op_model_item::Item>::into_op_model` | v3 item -> internal item |
+| `0x616c610` | `v2::ItemDetails as IntoOpModel<op_model_item::ItemDetails>` | details -> internal details |
+| `0x6168eb0` | `v2::ItemOverview as IntoOpModel<op_model_item::ItemOverview>` | overview -> internal overview |
+| `0x616e070` | `v2::DetailSectionField as IntoOpModel<op_model_item::SectionField>` | section field + typed value |
+| `0x616d610` | `v2::DocumentAttributes as TryIntoOpModel<op_model_item::DocumentAttributes>` | plaintext or encrypted file reference |
+| `0x4533ec0` | `v3::import` tokio task | ZIP/JSON parsing and import driver |
+| `0x4c84fa0` | `v3::import_files` | associate `files/` entries with items |
+
+Import flow:
+
+1. Read `export.attributes` (`version`, `description`, `timestamp`), then
+   `export.data` (`accounts -> vaults -> items`).
+2. Deserialize each `InnerVaultItem` into an internal `op_model_item::Item`.
+   The category string is parsed as a `Category`; `state` is
+   `active`/`archived`/`deleted`; `uuid`, `favIndex`, timestamps, `details`,
+   and `overview` are copied.
+3. Deserialize `ItemDetails` into the internal details model.  The importer
+   accepts the same eight fields as the exporter: `htmlForm`, `loginFields`,
+   `notesPlain`, `sections`, `passwordHistory`, `password`, `passkey`, and
+   `documentAttributes`.
+4. Deserialize `ItemOverview` into the internal overview model.  `subtitle`
+   and `ainfo` are aliases; `icons`, `urls`, `tags`, `ps`, `pbe`, `pgrng`,
+   `shortcut`, `locations`, `b5UserUUID`, `watchtowerExclusions`, and `appIds`
+   are accepted.
+5. `DocumentAttributes` has two paths:
+   - Plaintext 1PUX: `fileName`, `documentId`, `decryptedSize`; the file body
+     is read from `files/<documentId>___<fileName>`.
+   - Encrypted/import-file path: `encryptionKey`, `nonce`, `integrityHash`,
+     `encryptedSize`, `signingKey`, etc.; this is used by other importers, not
+     by a plaintext 1PUX export.
+6. `import_files` matches file entries to `documentAttributes` and section
+   file fields.  Missing files are an import error; the app layer then writes
+   the resulting items into the target vault.
+7. The v3 parser does **not** create accounts or vaults.  Account/vault
+   creation, keyset encryption, and sync are handled by the surrounding app
+   layer, not by the 1PUX translation code.
+
+The schema-level importer contains a `passkey` field, but the official 1PUX
+export policy excludes passkeys (the export UI says "all your data, except
+your passkeys").  The strict exporter therefore omits `passkey`, even though
+the deserializer can represent it; importing passkey-bearing 1PUX files is a
+separate, policy-sensitive path.
+
 ## Verification
 
 ```bash
