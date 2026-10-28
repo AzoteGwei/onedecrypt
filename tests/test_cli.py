@@ -7,6 +7,7 @@ from pathlib import Path
 
 from helpers import synthetic_account
 from onedecrypt.cli import main
+from onedecrypt.pux_schema import ITEM_KEYS
 
 
 def _make_db(path: Path) -> None:
@@ -111,5 +112,34 @@ def test_decrypt_end_to_end_synthetic_database(tmp_path: Path):
     with zipfile.ZipFile(out) as zf:
         exported = json.loads(zf.read("export.data"))
     item = exported["accounts"][0]["vaults"][0]["items"][0]
+    assert set(item) == ITEM_KEYS
     assert item["details"]["loginFields"][1]["value"] == "secret"
     assert item["overview"]["title"] == "Example"
+
+    full_out = tmp_path / "rescue-full.1pux"
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "decrypt",
+                "--account",
+                "nobody@example.com",
+                "--secret-key",
+                "A3-ASWWYB-798JRY-LJVD4-23DC2-86TVM-H43EB",
+                "--password",
+                "update-clown-squid-bedpost",
+                "--out",
+                str(full_out),
+                "--no-files",
+                "--schema-profile",
+                "full",
+            ]
+        )
+        == 0
+    )
+    with zipfile.ZipFile(full_out) as zf:
+        full_exported = json.loads(zf.read("export.data"))
+    full_item = full_exported["accounts"][0]["vaults"][0]["items"][0]
+    assert "trashed" in full_item
+    assert "stateRaw" in full_item

@@ -9,11 +9,14 @@ particular:
 * ``ItemOverview`` has the full v3 field set.
 * ``export.attributes`` uses ``timestamp`` (not the doc example's
   ``createdAt``).
-* Passkeys are excluded, matching the official 1PUX policy.
+* ``official`` is the exporter/importer intersection, ``importer`` and
+  ``exporter`` expose their respective code-supported field sets, and
+  ``full`` keeps all local metadata including passkeys.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 import warnings
@@ -24,7 +27,14 @@ from typing import Any
 from .crypto import DecryptionError
 from .database import Account, Item, Vault
 from .documents import extract_document
-from .pux_schema import validate_export_data, validate_attributes
+from .pux_schema import (
+    PROFILE_FULL,
+    PROFILE_IMPORTER,
+    PROFILE_OFFICIAL,
+    PROFILES,
+    validate_attributes,
+    validate_export_data,
+)
 
 STATE_ACTIVE = 0
 STATE_ARCHIVED = 1
@@ -245,11 +255,16 @@ def _convert_document_attributes(attrs: object, document_size: int | None) -> di
 
 
 def _normalize_details(
-    details: dict, category_uuid: str, document_size: int | None = None
+    details: dict,
+    category_uuid: str,
+    document_size: int | None = None,
+    profile: str = PROFILE_OFFICIAL,
 ) -> dict:
-    """Convert decrypted B5 details into the official v3 ItemDetails shape."""
+    """Convert decrypted B5 details into the selected 1PUX profile."""
     if not isinstance(details, dict):
         return {}
+    if profile == PROFILE_FULL:
+        return copy.deepcopy(details)
     result: dict[str, Any] = {}
 
     html_form = _convert_html_form(details.get("htmlForm"))
@@ -286,7 +301,9 @@ def _normalize_details(
     if document_attributes:
         result["documentAttributes"] = document_attributes
 
-    # Official 1PUX intentionally excludes passkeys.
+    passkey = details.get("passkey")
+    if profile == PROFILE_IMPORTER and isinstance(passkey, dict):
+        result["passkey"] = copy.deepcopy(passkey)
     return result
 
 
@@ -303,8 +320,15 @@ def _convert_url(url: object) -> dict | None:
     return result
 
 
-def _normalize_overview(overview: dict, details: dict, category_uuid: str) -> dict:
+def _normalize_overview(
+    overview: dict,
+    details: dict,
+    category_uuid: str,
+    profile: str = PROFILE_OFFICIAL,
+) -> dict:
     source = overview if isinstance(overview, dict) else {}
+    if profile == PROFILE_FULL:
+        return copy.deepcopy(source)
     result: dict[str, Any] = {"title": str(source.get("title", "") or "")}
 
     url = source.get("url")
@@ -331,22 +355,39 @@ def _normalize_overview(overview: dict, details: dict, category_uuid: str) -> di
     if subtitle:
         result["subtitle"] = str(subtitle)
 
-    for key in ("icons", "shortcut", "locations", "b5UserUUID", "watchtowerExclusions", "appIds"):
+    for key in (
+        "icons",
+        "passkey",
+        "passkeyId",
+        "shortcut",
+        "locations",
+        "b5UserUUID",
+        "watchtowerExclusions",
+        "appIds",
+    ):
         if key not in source or source[key] in (None, [], {}):
+            continue
+        if key in ("passkey", "passkeyId") and profile != PROFILE_IMPORTER:
             continue
         if key == "icons" and not isinstance(source[key], dict):
             continue
         result[key] = source[key]
-    # passkeys and passkey metadata are intentionally not exported
     return result
 
 
-def _normalize_item(item: Item, document_size: int | None = None) -> dict:
+def _normalize_item(
+    item: Item,
+    document_size: int | None = None,
+    profile: str = PROFILE_OFFICIAL,
+) -> dict:
     data = item.data
     category_uuid = str(data.get("category_uuid", ""))
-    details = _normalize_details(item.details or {}, category_uuid, document_size)
-    overview = _normalize_overview(item.overview or {}, details, category_uuid)
-    return {
+    details = _normalize_details(item.details or {}, category_uuid, document_size, profile)
+    if profile == PROFILE_FULL:
+        overview = copy.deepcopy(item.overview or {})
+    else:
+        overview = _normalize_overview(item.overview or {}, details, category_uuid, profile)
+    result = {
         "uuid": item.uuid,
         "favIndex": 1 if data.get("is_favorite") else 0,
         "createdAt": _as_int(data.get("created_at")) or 0,
@@ -356,6 +397,16 @@ def _normalize_item(item: Item, document_size: int | None = None) -> dict:
         "details": details,
         "overview": overview,
     }
+    if profile == PROFILE_FULL:
+        result["trashed"] = "D" if result["state"] == "deleted" else "N"
+        result["stateRaw"] = data.get("state")
+        if "validated" in data:
+            result["validated"] = data["validated"]
+        if "changer_uuid" in data:
+            result["changerUuid"] = data["changer_uuid"]
+        if "scope" in (item.overview or {}):
+            result["scope"] = item.overview["scope"]
+    return result
 
 
 def _normalize_vault(vault: Vault) -> dict:
@@ -388,8 +439,11 @@ def _normalize_account(account: Account) -> dict:
 def build_export_data(
     account: Account,
     files_dir: Path | None = None,
+    profile: str = PROFILE_OFFICIAL,
 ) -> tuple[dict, dict[str, bytes]]:
     """Return (export.data, files) for one decrypted account."""
+    if profile not in PROFILES:
+        raise ValueError(f"unknown schema profile {profile!r}")
     vaults = []
     files: dict[str, bytes] = {}
     for vault in account.vaults:
@@ -405,7 +459,7 @@ def build_export_data(
                 warnings.warn(f"item {item.uuid}: {exc}", stacklevel=2)
                 document = None
             document_size = len(document[1]) if document is not None else None
-            normalized = _normalize_item(item, document_size)
+            normalized = _normalize_item(item, document_size, profile)
             items.append(normalized)
             if document is not None:
                 file_name, content = document
@@ -414,7 +468,7 @@ def build_export_data(
                     files[f"files/{document_id}___{file_name}"] = content
         vaults.append({"attrs": _normalize_vault(vault), "items": items})
     data = {"accounts": [{"attrs": _normalize_account(account), "vaults": vaults}]}
-    validate_export_data(data)
+    validate_export_data(data, profile)
     return data, files
 
 
@@ -422,10 +476,11 @@ def write_1pux(
     path: str | Path,
     account: Account,
     files_dir: Path | None = None,
+    profile: str = PROFILE_OFFICIAL,
 ) -> tuple[Path, int, int]:
-    """Write an official-schema 1PUX file."""
+    """Write a 1PUX file using the selected schema profile."""
     path = Path(path)
-    data, files = build_export_data(account, files_dir)
+    data, files = build_export_data(account, files_dir, profile)
     attributes = {
         "version": 3,
         "description": "1Password Unencrypted Export",
@@ -446,7 +501,7 @@ def write_1pux(
     return path, item_count, len(files)
 
 
-def dump_account_json(account: Account) -> dict:
+def dump_account_json(account: Account, profile: str = PROFILE_OFFICIAL) -> dict:
     """Return a plain JSON representation useful for debugging."""
     return {
         "account": {
@@ -460,7 +515,7 @@ def dump_account_json(account: Account) -> dict:
             {
                 "uuid": vault.uuid,
                 "attrs": _normalize_vault(vault),
-                "items": [_normalize_item(item) for item in vault.items],
+                "items": [_normalize_item(item, profile=profile) for item in vault.items],
             }
             for vault in account.vaults
         ],

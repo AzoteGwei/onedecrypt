@@ -151,8 +151,9 @@ The decrypted item bodies use the B5/`op_model_item` JSON schema:
 The strict 1PUX v3 exporter converts the login `fields` array to
 `loginFields`, maps short section fields (`t/n/k/v/a`) to the official
 `title/id/value/...` form, maps `ainfo` to `subtitle`, and emits only the
-fields present in the v3 structs.  Passkeys are deliberately not emitted,
-matching the official 1PUX policy.
+fields present in the selected schema profile.  Passkeys are preserved by the
+canonical profiles because the importer's `ItemDetails` model supports the
+`passkey` field; the official export policy is tracked separately.
 
 The integer `state` field is interpreted using the desktop SQL found in
 `index.node`:
@@ -224,6 +225,25 @@ export.data       = {accounts: [{attrs, vaults: [{attrs, items: [...]}]}]}
 files/            = optional decrypted documents
 ```
 
+## Schema profiles
+
+The exporter exposes four profiles derived from the reverse-engineered
+capability sets:
+
+| Profile | Selection rule |
+| --- | --- |
+| `official` | fields emitted by the official exporter **and** consumed by the official importer |
+| `importer` | fields consumed by the official importer |
+| `exporter` | fields emitted by the official exporter |
+| `full` | all locally available metadata, including fields only present in the local database |
+
+The current matrix has the same field sets for `official` and `exporter`.
+`importer` adds the importer-only `passkey` field, which the exporter path
+does not emit.  The names remain separate so a future correction to either
+code path cannot silently change the meaning of a profile.  `full`
+additionally keeps `trashed`, `changerUuid`, `scope`, `stateRaw`, `validated`,
+raw short-key section fields, and the full document encryption metadata.
+
 ## 1PUX import path
 
 The official importer is the reverse direction of the same v3 models.  The
@@ -268,11 +288,11 @@ Import flow:
    creation, keyset encryption, and sync are handled by the surrounding app
    layer, not by the 1PUX translation code.
 
-The schema-level importer contains a `passkey` field, but the official 1PUX
-export policy excludes passkeys (the export UI says "all your data, except
-your passkeys").  The strict exporter therefore omits `passkey`, even though
-the deserializer can represent it; importing passkey-bearing 1PUX files is a
-separate, policy-sensitive path.
+The schema-level importer contains a `passkey` field, and the `importer`
+profile therefore includes it when present.  The exporter path does not emit
+passkeys, so `official` and `exporter` omit them; `full` keeps all passkey
+metadata.  The official export UI's "all your data, except your passkeys"
+message is consistent with the exporter-side behavior.
 
 ## Verification
 

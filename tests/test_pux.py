@@ -13,7 +13,15 @@ from onedecrypt.crypto import b64u
 from onedecrypt.database import Account, Item, Vault
 from onedecrypt.decrypt import decrypt_account
 from onedecrypt.pux import build_export_data, item_state, write_1pux
-from onedecrypt.pux_schema import ITEM_KEYS, SchemaError, validate_export_data
+from onedecrypt.pux_schema import (
+    ITEM_KEYS,
+    PROFILE_EXPORTER,
+    PROFILE_FULL,
+    PROFILE_IMPORTER,
+    PROFILE_OFFICIAL,
+    SchemaError,
+    validate_export_data,
+)
 
 
 def test_item_state_mapping():
@@ -121,7 +129,7 @@ def test_short_section_fields_are_converted():
     assert "ainfo" not in overview
 
 
-def test_passkeys_are_excluded_from_strict_export():
+def test_passkeys_follow_profile_capabilities():
     account = synthetic_account()
     account.vaults[0].key = b"x" * 32
     item = account.vaults[0].items[0]
@@ -134,9 +142,40 @@ def test_passkeys_are_excluded_from_strict_export():
             "userHandle": "dXNlcg",
         },
     }
-    data, _ = build_export_data(account)
-    details = data["accounts"][0]["vaults"][0]["items"][0]["details"]
-    assert "passkey" not in details
+    for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER):
+        data, _ = build_export_data(account, profile=profile)
+        details = data["accounts"][0]["vaults"][0]["items"][0]["details"]
+        assert "passkey" not in details
+    for profile in (PROFILE_IMPORTER, PROFILE_FULL):
+        data, _ = build_export_data(account, profile=profile)
+        details = data["accounts"][0]["vaults"][0]["items"][0]["details"]
+        assert details["passkey"]["type"] == "webauthn"
+
+
+def test_full_profile_keeps_extra_metadata():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["changer_uuid"] = "USER"
+    item.data["state"] = 1
+    item.overview = {"title": "Example", "scope": "private"}
+    item.details = {"sections": [{"name": "s", "title": "", "fields": []}]}
+    data, _ = build_export_data(account, profile=PROFILE_FULL)
+    full_item = data["accounts"][0]["vaults"][0]["items"][0]
+    assert full_item["state"] == "archived"
+    assert full_item["stateRaw"] == 1
+    assert full_item["trashed"] == "N"
+    assert full_item["changerUuid"] == "USER"
+    assert full_item["scope"] == "private"
+    assert full_item["details"] == item.details
+    validate_export_data(data, PROFILE_FULL)
+    with_extra = json.loads(json.dumps(data))
+    try:
+        validate_export_data(with_extra, PROFILE_OFFICIAL)
+    except SchemaError:
+        pass
+    else:
+        raise AssertionError("official profile accepted full-profile extras")
 
 
 def test_schema_rejects_non_official_fields():
@@ -145,7 +184,7 @@ def test_schema_rejects_non_official_fields():
     data, _ = build_export_data(account)
     data["accounts"][0]["vaults"][0]["items"][0]["trashed"] = "N"
     try:
-        validate_export_data(data)
+        validate_export_data(data, PROFILE_OFFICIAL)
     except SchemaError:
         pass
     else:

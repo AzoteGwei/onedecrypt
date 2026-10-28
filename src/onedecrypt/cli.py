@@ -12,6 +12,7 @@ from .crypto import DecryptionError, derive_muk, jwe_decrypt, parse_secret_key
 from .database import Account, LocalDatabase, find_account, load_items
 from .decrypt import decrypt_account
 from .pux import dump_account_json, write_1pux
+from .pux_schema import PROFILE_OFFICIAL, PROFILES
 
 DEFAULT_DB = Path.home() / ".config" / "1Password" / "1password.sqlite"
 
@@ -148,7 +149,9 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
             return 4
 
         out = Path(args.out).expanduser() if args.out else Path.cwd() / f"{account.uuid}.1pux"
-        path, item_count, file_count = write_1pux(out, account, files_dir)
+        path, item_count, file_count = write_1pux(
+            out, account, files_dir, profile=args.schema_profile
+        )
         print(f"Wrote {path} ({item_count} items, {file_count} document file(s))")
         if account.failed_vaults:
             print(
@@ -173,7 +176,11 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
         if args.dump_json:
             dump_path = Path(args.dump_json).expanduser()
             dump_path.write_text(
-                json.dumps(dump_account_json(account), ensure_ascii=False, indent=2),
+                json.dumps(
+                    dump_account_json(account, profile=args.schema_profile),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             try:
@@ -235,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="1Password document cache directory (default: <db directory>/files)",
     )
     decrypt_parser.add_argument("--no-files", action="store_true", help="do not include documents")
+    decrypt_parser.add_argument(
+        "--schema-profile",
+        choices=sorted(PROFILES),
+        default=PROFILE_OFFICIAL,
+        help="1PUX schema profile (default: official)",
+    )
     decrypt_parser.add_argument(
         "--check",
         action="store_true",

@@ -27,6 +27,7 @@ uv run onedecrypt decrypt \
   --secret-key 'A3-XXXXXX-XXXXXX-XXXXX-XXXXX-XXXXX-XXXXX' \
   --password 'your master password' \
   --out rescue.1pux
+# Add --schema-profile importer|exporter|full to select a different profile
 
 # Check the credentials without writing an export
 uv run onedecrypt decrypt --account you@example.com \
@@ -38,6 +39,15 @@ uv run onedecrypt self-test
 # Run the unit tests
 uv run pytest
 ```
+
+`--schema-profile` selects the 1PUX schema profile:
+
+| Profile | Meaning |
+|---|---|
+| `official` (default) | Fields supported by both the official exporter and importer |
+| `importer` | Maximum field set consumed by the official importer (includes passkeys) |
+| `exporter` | Field set emitted by the official exporter |
+| `full` | All locally available metadata; a backup profile, not guaranteed importable |
 
 By default the database is read from
 `~/.config/1Password/1password.sqlite` and document blobs from
@@ -79,7 +89,8 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
 - The 1PUX exporter follows the official v3 schema recovered from the
   desktop core: exactly eight item fields, the full item details/overview
   key sets, long-form section fields, and `export.attributes.timestamp`.
-  Passkeys are deliberately excluded, matching the official 1PUX policy.
+  `importer` keeps passkeys because the importer model supports the `passkey`
+  field; `official` and `exporter` omit them to match the exporter path.
   Custom icon files are not exported.
 
 ## Security
