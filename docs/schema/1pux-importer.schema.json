@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://onedecrypt.invalid/schema/1pux-importer.schema.json",
   "title": "1PUX v3 export.data (importer profile)",
-  "description": "JSON Schema for the ``export.data`` entry of a 1PUX ZIP archive. Every field accepted by the official v3 importer, including the importer-only details/overview passkey slots and aliases such as LoginField.type, DetailHTMLForm.htmlID, OverviewUrl.m, AccountAttrs.fullName and MigrationDestination.  Objects allow additional properties because the importer's serde visitors ignore unknown keys.  This schema describes what the importer can read, not what the official exporter writes. See docs/schema/README.md for the ZIP layout and the companion ``export.attributes`` schema.",
+  "description": "JSON Schema for the ``export.data`` entry of a 1PUX ZIP archive. Every field the official v3 importer actually consumes, including aliases such as LoginField.type, DetailHTMLForm.htmlID, OverviewUrl.m, AccountAttrs.fullName and MigrationDestination. The visitors also accept passkey/passkeyId through force_none, but those payloads are discarded, so they are excluded here. Objects allow additional properties because the importer's serde visitors ignore unknown keys. This schema describes what the importer can read, not what the official exporter writes. See docs/schema/README.md for the ZIP layout and the companion ``export.attributes`` schema.",
   "$comment": "Recovered from the shipped 1Password desktop core (op_import_export::models::translation::onepux::v2/v3). Primary importer visitors (nm addresses): 0x4740aa0 (ItemDetails), 0x4740d10 (ItemOverview), 0x4740760 (DetailSection), 0x47414a0 (DetailSectionField), 0x4740830 (DocumentAttributes), 0x47412e0 (LoginField), 0x4740370 (OverviewUrl), 0x4740fd0 (SectionFieldValue), 0x492fc80 (InputTraits). Required-field evidence: ItemOverview.subtitle missing-field call at 0x4587208; DetailSectionField title/value/id/guarded at 0x43e01xx; DocumentAttributes fileName/decryptedSize at 0x4324f87/0x432505d; InputTraits keyboard/correction/capitalization via 0x492fc80. Main exporter path: 0x4c4fb70 (onepux::export closure) and 0x6173620 (ItemDetails::from). File entries use ``files/<documentId>__<fileName>`` (two underscores); the format string is at 0x11f79ac, its call site is 0x4c52c4a, and the importer lookup is 0x4535aae.",
   "type": "object",
   "additionalProperties": true,
@@ -248,13 +248,10 @@
         },
         "htmlForm": {
           "$ref": "#/$defs/DetailHtmlForm"
-        },
-        "passkey": {
-          "$ref": "#/$defs/Passkey"
         }
       },
       "additionalProperties": false,
-      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes. The importer deserializes passkey through force_none."
+      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes. The passkey value is deserialized through force_none and discarded, so only the raw full profile preserves it."
     },
     "ItemOverview": {
       "type": "object",
@@ -348,13 +345,6 @@
           "description": "Alias spelling of ``b5UserUuid`` accepted by the official importer.",
           "$comment": "Legacy/importer alias: ``b5UserUUID`` is accepted as the same field."
         },
-        "passkey": {
-          "$ref": "#/$defs/Passkey"
-        },
-        "passkeyId": {
-          "type": "string",
-          "description": "Passkey identifier."
-        },
         "MigrationDestination": {
           "type": "string",
           "description": "Importer alias for ``migrationDestination``.",
@@ -375,7 +365,7 @@
       "required": [
         "title"
       ],
-      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. subtitle and url are non-Option Strings; appIds is local-only."
+      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. subtitle and url are non-Option Strings; appIds is local-only. passkey/passkeyId are accepted only through force_none and are not imported."
     },
     "ItemShortcut": {
       "type": "object",
@@ -927,7 +917,7 @@
           "properties": {
             "sshKey": {
               "type": "object",
-              "description": "SSH key object emitted by the official exporter.",
+              "description": "SSH key object emitted by the official exporter. The importer parses privateKey and derives missing metadata, so metadata may be omitted.",
               "properties": {
                 "privateKey": {
                   "type": "string",
@@ -1340,17 +1330,6 @@
       "additionalProperties": false,
       "required": [
         "Gps"
-      ]
-    },
-    "Passkey": {
-      "description": "Opaque passkey payload. The official 1PUX exporter does not emit passkeys; the importer model has a passkey field, so the importer and full profiles preserve the local value verbatim.",
-      "type": [
-        "object",
-        "array",
-        "string",
-        "number",
-        "boolean",
-        "null"
       ]
     },
     "IconKey": {

@@ -278,7 +278,7 @@
         "sections",
         "passwordHistory"
       ],
-      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes. The importer deserializes passkey through force_none."
+      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes. The passkey value is deserialized through force_none and discarded, so only the raw full profile preserves it."
     },
     "ItemOverview": {
       "type": "object",
@@ -376,7 +376,7 @@
         "icons",
         "watchtowerExclusions"
       ],
-      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. subtitle and url are non-Option Strings; appIds is local-only."
+      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. subtitle and url are non-Option Strings; appIds is local-only. passkey/passkeyId are accepted only through force_none and are not imported."
     },
     "ItemShortcut": {
       "type": "object",
@@ -947,7 +947,7 @@
           "properties": {
             "sshKey": {
               "type": "object",
-              "description": "SSH key object emitted by the official exporter.",
+              "description": "SSH key object emitted by the official exporter. The importer parses privateKey and derives missing metadata, so metadata may be omitted.",
               "properties": {
                 "privateKey": {
                   "type": "string",
@@ -1302,17 +1302,6 @@
       "additionalProperties": false,
       "required": [
         "Gps"
-      ]
-    },
-    "Passkey": {
-      "description": "Opaque passkey payload. The official 1PUX exporter does not emit passkeys; the importer model has a passkey field, so the importer and full profiles preserve the local value verbatim.",
-      "type": [
-        "object",
-        "array",
-        "string",
-        "number",
-        "boolean",
-        "null"
       ]
     },
     "IconKey": {

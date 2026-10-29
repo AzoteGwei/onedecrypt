@@ -45,7 +45,7 @@ uv run pytest
 | Profile | Meaning |
 |---|---|
 | `official` (default) | Fields supported by both the official exporter and importer |
-| `importer` | Maximum field set consumed by the official importer (includes details/overview passkey slots) |
+| `importer` | Fields the official importer actually consumes (passkey slots are accepted but discarded) |
 | `exporter` | Field set emitted by the official exporter |
 | `full` | All locally available metadata; a backup profile, not guaranteed importable |
 
@@ -104,13 +104,17 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
 - The 1PUX exporter follows the official v3 schema recovered from the
   desktop core: exactly eight item fields, the canonical item details/overview
   key sets, long-form section fields, and `export.attributes.timestamp`.
-  `importer` keeps the `details.passkey` field and the overview
-  `passkey`/`passkeyId` slots because the importer accepts them; the payload is
-  discarded via `force_none`. `official`/`exporter` omit them to match the
-  exporter path.
+  The importer accepts `details.passkey` and the overview
+  `passkey`/`passkeyId` slots only through `force_none`, so their payloads are
+  discarded; no importable profile emits passkeys.  Only the raw `full`
+  profile keeps local passkey metadata, and that profile is a backup format,
+  not a way to restore passkeys into the official app.
   Custom icon files are not exported.  File entries use
   `files/<documentId>__<fileName>` (two underscores), matching the actual
-  exporter/importer format string.
+  exporter/importer format string.  SSH key section fields are always written
+  as the typed `{"sshKey": {"privateKey": ...}}` value; if the local row only
+  contains private-key text, the importer derives the public key, fingerprint
+  and key type during import.
 
 ## Security
 

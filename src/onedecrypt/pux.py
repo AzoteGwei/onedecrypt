@@ -86,6 +86,14 @@ SECTION_STRING_TAGS = {
     "totp",
     "url",
 }
+# The local B5 rows use the same camel-case tags as the official wire
+# format, but some older rows spell the SSH tag as a local identifier.
+SECTION_VALUE_ALIASES = {
+    "ssh_key": "sshKey",
+    "ssh-key": "sshKey",
+    "privateKey": "sshKey",
+    "private_key": "sshKey",
+}
 WATCHTOWER_KEYS = {
     "compromised",
     "vulnerable",
@@ -231,32 +239,78 @@ def _normalize_key_type(value: object) -> str | dict:
     return "ed25519"
 
 
+def _looks_like_private_key(value: object) -> bool:
+    """Return true for private-key text or an object carrying one."""
+    if isinstance(value, dict):
+        return any(key in value for key in ("privateKey", "private_key"))
+    if not isinstance(value, str):
+        return False
+    head = value.lstrip()[:80]
+    return head.startswith("-----BEGIN ") and "PRIVATE KEY-----" in head
+
+
 def _normalize_ssh_key(value: object) -> dict | None:
-    if not isinstance(value, dict):
+    """Normalize a local SSH key field value.
+
+    The official wire value is ``{"privateKey": ..., "metadata": {...}}``.
+    Local B5 rows can store the same object, a bare private-key string, or a
+    flat object with ``privateKey``/``publicKey``/``fingerprint``/``keyType``.
+    The importer can derive the metadata when it is absent, so ``metadata`` is
+    only emitted when the source actually contains it.
+    """
+    if isinstance(value, str):
+        private_key = value
+        inner: dict = {}
+    elif isinstance(value, dict):
+        inner = value.get("sshKey") if isinstance(value.get("sshKey"), dict) else value
+        private_key = _text_value(
+            inner.get("privateKey", inner.get("private_key", inner.get("value")))
+        )
+    else:
         return None
-    inner = value.get("sshKey") if isinstance(value.get("sshKey"), dict) else value
-    private_key = _text_value(
-        inner.get("privateKey", inner.get("private_key", inner.get("value")))
-    )
+
     metadata = inner.get("metadata")
+    flat_metadata = any(
+        key in inner
+        for key in (
+            "publicKey",
+            "public_key",
+            "fingerprint",
+            "keyType",
+            "key_type",
+        )
+    )
+    if not isinstance(metadata, dict) and flat_metadata:
+        metadata = inner
     if not isinstance(metadata, dict):
-        metadata = {}
-    return {
-        "privateKey": private_key,
-        "metadata": {
-            "privateKey": _text_value(
-                metadata.get("privateKey", metadata.get("private_key")),
-                private_key,
-            ),
-            "publicKey": _text_value(
-                metadata.get("publicKey", metadata.get("public_key"))
-            ),
-            "fingerprint": _text_value(metadata.get("fingerprint")),
-            "keyType": _normalize_key_type(
-                metadata.get("keyType", metadata.get("key_type"))
-            ),
-        },
-    }
+        metadata = None
+
+    if metadata is not None:
+        metadata_private = _text_value(
+            metadata.get("privateKey", metadata.get("private_key")),
+            private_key,
+        )
+        if not private_key:
+            private_key = metadata_private
+        if not private_key:
+            return None
+        return {
+            "privateKey": private_key,
+            "metadata": {
+                "privateKey": metadata_private or private_key,
+                "publicKey": _text_value(
+                    metadata.get("publicKey", metadata.get("public_key"))
+                ),
+                "fingerprint": _text_value(metadata.get("fingerprint")),
+                "keyType": _normalize_key_type(
+                    metadata.get("keyType", metadata.get("key_type"))
+                ),
+            },
+        }
+
+    if not private_key:
+        return None
+    return {"privateKey": private_key}
 
 
 def _normalize_sso_login(value: object) -> dict | None:
@@ -357,15 +411,26 @@ def _normalize_section_value(kind: object, value: object) -> object:
     several variants use nested object shapes.  Normalize those shapes here so
     serde does not reject the whole data model.
     """
-    tag = str(kind) if isinstance(kind, str) and kind in SECTION_VALUE_TAGS else None
+    tag = None
+    if isinstance(kind, str):
+        candidate = SECTION_VALUE_ALIASES.get(kind, kind)
+        if candidate in SECTION_VALUE_TAGS:
+            tag = candidate
 
     # B5 rows and synthetic fixtures may already store the externally tagged
     # object.  Unwrap it before normalizing the payload.
     if isinstance(value, dict) and len(value) == 1:
         only = next(iter(value))
-        if only in SECTION_VALUE_TAGS and (tag is None or only == tag):
-            tag = only
+        cooked = SECTION_VALUE_ALIASES.get(only, only)
+        if cooked in SECTION_VALUE_TAGS and (tag is None or cooked == tag):
+            tag = cooked
             value = value[only]
+
+    # A bare PEM private key is an SSH key even when an older row lost its
+    # kind tag.  The importer derives the public key/fingerprint when metadata
+    # is absent.
+    if tag is None and _looks_like_private_key(value):
+        tag = "sshKey"
 
     if tag == "file":
         if isinstance(value, dict):
@@ -521,19 +586,34 @@ def _convert_input_traits(traits: object) -> dict:
 
 
 def _convert_section_field(
-    field: object, file_info: dict[str, tuple[str, bytes]] | None = None
+    field: object,
+    file_info: dict[str, tuple[str, bytes]] | None = None,
+    category_uuid: str = "",
 ) -> dict | None:
     if not isinstance(field, dict):
         return None
     title = field.get("title", field.get("t", ""))
     field_id = field.get("id", field.get("n", ""))
-    kind = field.get("k")
+    kind = field.get("k", field.get("kind"))
+    if isinstance(kind, str):
+        kind = SECTION_VALUE_ALIASES.get(kind, kind)
     if "value" in field:
         value = field["value"]
     elif "v" in field:
         value = field["v"]
     else:
         value = None
+
+    # The local model represents SSH keys as a SectionFieldValue variant.
+    # Older B5 rows occasionally lost the kind tag but still identify the
+    # field as the category-114 private key.  Recover the variant so the
+    # importer creates an SSH key element instead of a plain text field.
+    if kind is None and category_uuid == "114":
+        label = f"{field_id} {title}".lower()
+        if _looks_like_private_key(value) or (
+            "private" in label and "key" in label
+        ):
+            kind = "sshKey"
 
     if isinstance(value, dict):
         file_reference = value.get("file")
@@ -590,7 +670,9 @@ def _convert_section_field(
 
 
 def _convert_section(
-    section: object, file_info: dict[str, tuple[str, bytes]] | None = None
+    section: object,
+    file_info: dict[str, tuple[str, bytes]] | None = None,
+    category_uuid: str = "",
 ) -> dict | None:
     if not isinstance(section, dict):
         return None
@@ -600,7 +682,11 @@ def _convert_section(
     fields = section.get("fields")
     if isinstance(fields, list):
         result["fields"] = [
-            f for f in (_convert_section_field(item, file_info) for item in fields) if f
+            f
+            for f in (
+                _convert_section_field(item, file_info, category_uuid) for item in fields
+            )
+            if f
         ]
     else:
         result["fields"] = []
@@ -728,7 +814,11 @@ def _normalize_details(
     converted_sections: list[dict] = []
     if isinstance(sections, list):
         converted_sections = [
-            s for s in (_convert_section(item, file_info) for item in sections) if s
+            s
+            for s in (
+                _convert_section(item, file_info, category_uuid) for item in sections
+            )
+            if s
         ]
     # The official exporter always writes these three arrays, possibly empty.
     result["sections"] = converted_sections
@@ -747,10 +837,10 @@ def _normalize_details(
     if document_attributes:
         result["documentAttributes"] = document_attributes
 
-    if profile == PROFILE_IMPORTER:
-        passkey = details.get("passkey")
-        if isinstance(passkey, dict):
-            result["passkey"] = copy.deepcopy(passkey)
+    # ``details.passkey`` is accepted by the importer's ItemDetails visitor
+    # only through the force_none helper; the value is discarded before the
+    # item model is built.  The exporter path never emits it either, so only
+    # the raw ``full`` profile (which returns above) preserves local passkeys.
     return result
 
 
@@ -861,11 +951,11 @@ def _normalize_overview(
 
     # ``appIds`` exists only in the local B5 overview and is not accepted by
     # the v3 importer's ItemOverview field visitor.  ``passkey``/``passkeyId``
-    # are importer-only because the exporter path does not emit passkeys.
-    for key in ("passkey", "passkeyId", "b5UserUUID", "b5UserUuid"):
+    # are accepted through force_none and discarded, so canonical profiles do
+    # not emit them; only the raw ``full`` profile (which returns above) keeps
+    # the local passkey overview.
+    for key in ("b5UserUUID", "b5UserUuid"):
         if key not in source or source[key] in (None, [], {}):
-            continue
-        if key in ("passkey", "passkeyId") and profile != PROFILE_IMPORTER:
             continue
         canonical_key = "b5UserUuid" if key == "b5UserUUID" else key
         result[canonical_key] = source[key]

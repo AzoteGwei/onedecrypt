@@ -440,7 +440,7 @@ def _validate_document_attributes(attrs: Any, where: str) -> None:
             _require_string(attrs[key], f"{where}.{key}")
 
 
-def _validate_details(details: Any, where: str, *, allow_passkey: bool) -> None:
+def _validate_details(details: Any, where: str) -> None:
     _keys(
         details,
         DETAILS_KEYS,
@@ -472,12 +472,10 @@ def _validate_details(details: Any, where: str, *, allow_passkey: bool) -> None:
                 f"{entry_where}.time must be an integer",
             )
     if "passkey" in details:
-        if not allow_passkey:
-            raise SchemaError(f"{where}: passkey is not part of this profile")
-        _require(isinstance(details["passkey"], dict), f"{where}.passkey must be an object")
+        raise SchemaError(f"{where}: passkey is not part of this profile")
 
 
-def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> None:
+def _validate_overview(overview: Any, where: str) -> None:
     # ItemOverview.subtitle is a required String (missing-field call at
     # 0x4587208 with the literal "subtitle").  The canonical exporter also
     # always writes url/icons/watchtowerExclusions.
@@ -487,7 +485,7 @@ def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> Non
         where,
         required={"title", "subtitle", "url", "icons", "watchtowerExclusions"},
     )
-    for key in ("title", "url", "subtitle", "ainfo", "b5UserUuid", "b5UserUUID", "passkeyId"):
+    for key in ("title", "url", "subtitle", "ainfo", "b5UserUuid", "b5UserUUID"):
         if key in overview:
             _require_string(overview[key], f"{where}.{key}")
     if "urls" in overview:
@@ -559,7 +557,7 @@ def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> Non
             _keys(overview[m_key], MIGRATION_KEYS, m_where)
             for child_key, value in overview[m_key].items():
                 _require_string(value, f"{m_where}.{child_key}")
-    if ("passkey" in overview or "passkeyId" in overview) and not allow_passkey:
+    if "passkey" in overview or "passkeyId" in overview:
         raise SchemaError(f"{where}: passkey metadata is not part of this profile")
 
 
@@ -632,10 +630,9 @@ def validate_export_data(data: dict, profile: str = PROFILE_OFFICIAL) -> None:
                 _keys(item, allowed_item_keys, i_where, required=ITEM_KEYS)
                 _validate_item_basics(item, i_where)
                 if not full:
-                    allow_passkey = profile == PROFILE_IMPORTER
-                    _validate_details(
-                        item["details"],
-                        f"{i_where}.details",
-                        allow_passkey=allow_passkey,
-                    )
-                    _validate_overview(item["overview"], f"{i_where}.overview", allow_passkey=allow_passkey)
+                    # The importer's ItemDetails/ItemOverview visitors accept
+                    # passkey fields only through force_none, which discards
+                    # the payload.  They are therefore not part of any
+                    # importable profile; only the raw full profile keeps them.
+                    _validate_details(item["details"], f"{i_where}.details")
+                    _validate_overview(item["overview"], f"{i_where}.overview")

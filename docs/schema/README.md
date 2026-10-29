@@ -18,15 +18,16 @@ not from product documentation alone.
 | Profile | Purpose | Passkeys | Local-only metadata |
 | --- | --- | --- | --- |
 | `official` (default) | Fields emitted by the official exporter **and** accepted by the official importer. This is the round-trip profile. | No | No |
-| `importer` | Every field the official importer's serde visitors accept, including legacy aliases. | Yes | Some importer-only legacy fields |
+| `importer` | Every field the official importer actually consumes, including legacy aliases. | No (accepted but discarded) | Some importer-only legacy fields |
 | `exporter` | Fields emitted by the official exporter. | No | No |
 | `full` | All metadata in the local B5 database. A backup profile; not guaranteed to import. | Yes | Yes |
 
 In the current reverse-engineering matrix `official` and `exporter` have the
 same canonical field set. The names are kept separate because the two code
-paths are separate: the exporter never emits passkeys, while the importer
+paths are separate: the exporter never emits passkeys, and the importer
 accepts `details.passkey` and the `ItemOverview` `passkey`/`passkeyId` slots
-(and discards the payload via `force_none`).
+only through `force_none`, which discards their payloads. They are therefore
+not part of `importer`; only the raw `full` backup profile keeps them.
 
 `importer` is intentionally a superset of `official`. It includes aliases that
 the shipped serde visitors accept but the exporter does not emit, for example:
@@ -49,7 +50,8 @@ throughout.
 
 `full` additionally keeps `trashed`, `changerUuid`, `scope`, `stateRaw`,
 `validated`, the raw short-key section representation, the full document
-encryption metadata, passkeys and `appIds`.
+encryption metadata, local passkey metadata and `appIds`.  It is a backup
+format, not an import path: the official importer discards passkey payloads.
 
 The `ItemOverview.watchtowerExclusions` field is `null` or an object of
 boolean exclusion flags, not a string array. `overview.shortcut` is an
@@ -167,10 +169,24 @@ other local-only keys preserved by `full`.
 ### Passkeys
 
 The official 1PUX exporter does not emit passkeys. The importer accepts
-`details.passkey` and the `ItemOverview` `passkey`/`passkeyId` slots; the
-payloads are deserialized with `force_none` and discarded.
-`official`/`exporter` omit them; `importer`/`full` may preserve the local
-metadata as opaque JSON values.
+`details.passkey` and the `ItemOverview` `passkey`/`passkeyId` slots only
+through `force_none`: the JSON is consumed and immediately replaced with
+`None`, so no credential material reaches the item model. Consequently no
+importable profile can transfer a passkey. `official`/`exporter`/`importer`
+omit these fields; only the raw `full` backup profile preserves the local
+metadata as an opaque JSON value, and importing that profile into the
+official app will still not restore the passkey.
+
+### SSH keys
+
+An SSH key is a typed `SectionFieldValue`, not an `ItemDetails` field:
+`details.sections[].fields[].value.sshKey`. The value is
+`{"privateKey": ..., "metadata": {...}}`; `metadata` is optional, and the
+importer derives the public key, fingerprint and key type from `privateKey`
+when it is absent. onedecrypt also accepts older local rows that store the
+private key as a bare string or under an `ssh_key`/`private_key` tag and emits
+the typed value so the official app creates an SSH key element instead of a
+plain text field.
 
 ## Validating an export
 

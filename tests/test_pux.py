@@ -7,6 +7,8 @@ import warnings
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from helpers import synthetic_account, sym_jwk
@@ -167,19 +169,95 @@ def test_passkeys_follow_profile_capabilities():
         },
     }
     item.overview = {"title": "Example", "passkey": {"type": "webauthn"}}
-    # ItemDetails accepts passkey through force_none; only the importer and
-    # full profiles keep the local payload.  ItemOverview also accepts
-    # passkey/passkeyId, but force_none discards the payload.
-    for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER):
+    # The importer's ItemDetails/ItemOverview visitors accept passkey fields
+    # only through force_none, which discards the payload.  No importable
+    # profile can transfer a passkey; only the raw full profile keeps the
+    # local metadata for backup.
+    for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER, PROFILE_IMPORTER):
         data, _ = build_export_data(account, profile=profile)
         item_data = data["accounts"][0]["vaults"][0]["items"][0]
         assert "passkey" not in item_data["details"]
         assert "passkey" not in item_data["overview"]
-    for profile in (PROFILE_IMPORTER, PROFILE_FULL):
-        data, _ = build_export_data(account, profile=profile)
-        item_data = data["accounts"][0]["vaults"][0]["items"][0]
-        assert item_data["details"]["passkey"]["type"] == "webauthn"
-        assert item_data["overview"]["passkey"]["type"] == "webauthn"
+    data, _ = build_export_data(account, profile=PROFILE_FULL)
+    item_data = data["accounts"][0]["vaults"][0]["items"][0]
+    assert item_data["details"]["passkey"]["type"] == "webauthn"
+    assert item_data["overview"]["passkey"]["type"] == "webauthn"
+    validate_export_data(data, PROFILE_FULL)
+    passkey_data, _ = build_export_data(
+        account, profile=PROFILE_IMPORTER
+    )
+    passkey_item = passkey_data["accounts"][0]["vaults"][0]["items"][0]
+    passkey_item["details"]["passkey"] = {"type": "webauthn"}
+    for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER, PROFILE_IMPORTER):
+        with pytest.raises(SchemaError, match="passkey"):
+            validate_export_data(passkey_data, profile)
+    passkey_item["details"].pop("passkey")
+    passkey_item["overview"]["passkey"] = {"type": "webauthn"}
+    for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER, PROFILE_IMPORTER):
+        with pytest.raises(SchemaError, match="passkey"):
+            validate_export_data(passkey_data, profile)
+
+
+def test_scalar_ssh_private_key_becomes_ssh_key_value():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["category_uuid"] = "114"
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MFECAQEwBQYDK2VwBCIEIDIPmvzXim/Xt94YrEmBnNpcUKZm1mSDYpZoJmNEAzW6\n"
+        "-----END PRIVATE KEY-----\n"
+    )
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "fields": [
+                    {"title": "private key", "id": "private_key", "v": pem},
+                    {
+                        "title": "private key alias",
+                        "id": "private_key_alias",
+                        "k": "private_key",
+                        "v": pem,
+                    },
+                    {
+                        "title": "private key object",
+                        "id": "private_key_object",
+                        "v": {"privateKey": pem},
+                    },
+                    {
+                        "title": "private key flat metadata",
+                        "id": "private_key_flat",
+                        "v": {
+                            "privateKey": pem,
+                            "publicKey": "ssh-ed25519 AAAA",
+                            "fingerprint": "SHA256:test",
+                            "keyType": "ed25519",
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account)
+    fields = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0][
+        "fields"
+    ]
+    assert fields[0]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[1]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[2]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[3]["value"] == {
+        "sshKey": {
+            "privateKey": pem,
+            "metadata": {
+                "privateKey": pem,
+                "publicKey": "ssh-ed25519 AAAA",
+                "fingerprint": "SHA256:test",
+                "keyType": "ed25519",
+            },
+        }
+    }
+    validate_export_data(data, PROFILE_OFFICIAL)
 
 
 def test_full_profile_keeps_extra_metadata():
@@ -341,8 +419,6 @@ def test_section_scalar_value_is_tagged():
 
 
 def test_overview_types_are_checked():
-    import pytest
-
     from onedecrypt.pux_schema import _validate_overview
 
     with pytest.raises(SchemaError, match="ps"):
@@ -356,7 +432,6 @@ def test_overview_types_are_checked():
                 "ps": 100.5,
             },
             "overview",
-            allow_passkey=False,
         )
 
 
@@ -582,8 +657,6 @@ def test_section_values_match_official_payload_shapes():
 
 
 def test_validator_rejects_partial_input_traits():
-    import pytest
-
     from onedecrypt.pux_schema import _validate_input_traits
 
     with pytest.raises(SchemaError, match="missing field"):

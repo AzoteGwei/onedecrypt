@@ -151,9 +151,17 @@ The decrypted item bodies use the B5/`op_model_item` JSON schema:
 The strict 1PUX v3 exporter converts the login `fields` array to
 `loginFields`, maps short section fields (`t/n/k/v/a`) to the official
 `title/id/value/...` form, maps `ainfo` to `subtitle`, and emits only the
-fields present in the selected schema profile.  Passkeys are preserved by the
-canonical profiles because the importer's `ItemDetails` model supports the
-`passkey` field; the official export policy is tracked separately.
+fields present in the selected schema profile.  SSH keys are a
+`SectionFieldValue` variant, not an `ItemDetails` field; older local rows may
+store the private key as bare text, so the exporter normalizes that to
+`{"sshKey": {"privateKey": ...}}`.  The importer derives the missing public
+key/fingerprint/key type from the private key.
+
+Passkeys are local-only.  The official exporter drops the local
+`Option<Passkey>` when it builds `ItemDetails`, and the importer accepts the
+`passkey`/`passkeyId` JSON keys only through `force_none`, which discards
+their payloads.  A 1PUX file therefore cannot transfer a usable passkey; only
+the `full` backup profile keeps the local metadata.
 
 The integer `state` field is interpreted using the desktop SQL found in
 `index.node`:
@@ -205,8 +213,8 @@ strings:
   has exactly eight fields.
 - The v2 `ItemDetails` field dispatcher (reused by v3) has `htmlForm`,
   `loginFields`, `notesPlain`, `sections`, `passwordHistory`, `password`,
-  `sshKey` (force_none), and `documentAttributes`. It has no `passkey`
-  field.
+  `passkey` (force_none), and `documentAttributes`. It has no `sshKey`
+  field: SSH keys live in `SectionFieldValue`.
 - The v3 `ItemOverview` importer dispatcher has 20 accepted strings,
   including `subtitle`/`ainfo`, `icons`, `shortcut`, `locations`,
   `b5UserUUID`/`b5UserUuid`, `watchtowerExclusions`,
@@ -241,13 +249,13 @@ capability sets:
 | `full` | all locally available metadata, including fields only present in the local database |
 
 The current matrix has the same field sets for `official` and `exporter`.
-`importer` adds the importer-only overview `passkey`/`passkeyId` slots,
-which the exporter path does not emit, plus legacy aliases accepted by the
-serde visitors.  The names
-remain separate so a future correction to either code path cannot silently
-change the meaning of a profile.  `full` additionally keeps `trashed`,
-`changerUuid`, `scope`, `stateRaw`, `validated`, raw short-key section fields,
-`appIds`, and the full document encryption metadata.
+`importer` adds legacy aliases accepted by the serde visitors, but not the
+`passkey`/`passkeyId` slots: those are consumed by `force_none` and discarded,
+so they have no import effect.  The names remain separate so a future
+correction to either code path cannot silently change the meaning of a
+profile.  `full` additionally keeps `trashed`, `changerUuid`, `scope`,
+`stateRaw`, `validated`, raw short-key section fields, local passkey
+metadata, `appIds`, and the full document encryption metadata.
 
 Two field-set corrections from the importer analysis:
 
@@ -293,7 +301,8 @@ Import flow:
    `URLs`/`urls`, `tags`, `title`, `url`, `ps`, `pbe`, `pgrng`,
    `passkeyId`/`passkey`, `MigrationDestination`/`migrationDestination`,
    `watchtowerExclusions`, `shortcut`, and `locations`.  `appIds` is **not**
-   accepted; it exists only in the local B5 overview.
+   accepted; it exists only in the local B5 overview.  The
+   `passkey`/`passkeyId` values are force-none and do not reach the model.
 5. `DocumentAttributes` has two paths:
    - Plaintext 1PUX: `fileName`, `documentId`, `decryptedSize`; the file body
      is read from `files/<documentId>__<fileName>`.
@@ -308,10 +317,13 @@ Import flow:
    layer, not by the 1PUX translation code.
 
 The schema-level importer accepts `details.passkey` and the
-`ItemOverview` `passkey`/`passkeyId` slots; the payloads are deserialized with
-`force_none` and discarded.  The exporter path does not emit passkeys, so
-`official` and `exporter` omit them; `importer` and `full` keep the local
-metadata.
+`ItemOverview` `passkey`/`passkeyId` slots, but every one of those values is
+deserialized with `force_none` and replaced by `None`.  There is therefore no
+1PUX import path for passkeys: the payload never reaches the internal
+`op_model_item` structures.  The official exporter also drops the local
+`Option<Passkey>` when serializing `ItemDetails`.  `official`, `exporter` and
+`importer` omit passkeys; only the raw `full` backup profile preserves the
+local metadata, and importing it still does not restore the passkey.
 
 ## Verification
 

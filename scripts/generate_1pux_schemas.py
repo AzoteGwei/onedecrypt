@@ -10,14 +10,14 @@ declarative model so the four profiles cannot drift accidentally:
     This is the default/round-trip profile.
 
 ``importer``
-    Every field the official importer's serde visitors accept, including the
-    importer-only overview ``passkey``/``passkeyId`` slots (force_none) and
-    legacy aliases.
+    Every field the official importer actually consumes, including legacy
+    aliases but excluding ``passkey``/``passkeyId``: the visitors accept those
+    keys only through ``force_none`` and discard their payloads.
 
 ``exporter``
     Fields the official exporter emits.  In the current reverse-engineering
-    matrix this is the same field set as ``official`` because the exporter
-    never emits passkeys and the importer accepts the same canonical fields.
+    matrix this is the same field set as ``official`` because neither path
+    transfers passkeys and the importer accepts the same canonical fields.
 
 ``full``
     Every piece of metadata available in the local database.  This profile is
@@ -631,7 +631,9 @@ def section_field_value(profile: str) -> dict[str, Any]:
             "sshKey",
             "SSH key value.",
             obj(
-                "SSH key object emitted by the official exporter.",
+                "SSH key object emitted by the official exporter. The importer "
+                "parses privateKey and derives missing metadata, so metadata "
+                "may be omitted.",
                 {
                     "privateKey": text("Private key material."),
                     "metadata": obj(
@@ -795,9 +797,10 @@ def detail_section(profile: str) -> dict[str, Any]:
 
 def passkey_value(profile: str) -> dict[str, Any]:
     return any_value(
-        "Opaque passkey payload. The official 1PUX exporter does not emit "
-        "passkeys; the importer model has a passkey field, so the importer "
-        "and full profiles preserve the local value verbatim."
+        "Opaque local passkey metadata. The official exporter does not emit "
+        "passkeys, and the importer accepts passkey fields only through "
+        "force_none, which discards the payload. Only the raw full profile "
+        "preserves this local value verbatim."
     )
 
 
@@ -824,7 +827,7 @@ def item_details(profile: str) -> dict[str, Any]:
         ),
         "htmlForm": ref("DetailHtmlForm"),
     }
-    if profile in ("importer", "full"):
+    if profile == "full":
         properties["passkey"] = ref("Passkey")
     return obj(
         "Item details (``items[].details``). The official exporter always "
@@ -841,7 +844,8 @@ def item_details(profile: str) -> dict[str, Any]:
             "ItemDetails is the v2 struct reused by v3. The importer field "
             "visitor accepts htmlForm, loginFields, notesPlain, sections, "
             "passwordHistory, password, passkey and documentAttributes. "
-            "The importer deserializes passkey through force_none."
+            "The passkey value is deserialized through force_none and "
+            "discarded, so only the raw full profile preserves it."
         ),
     )
 
@@ -1016,8 +1020,6 @@ def item_overview(profile: str) -> dict[str, Any]:
             "importer.",
             "b5UserUUID",
         )
-        properties["passkey"] = ref("Passkey")
-        properties["passkeyId"] = text("Passkey identifier.")
         properties["MigrationDestination"] = alias_field(
             "Importer alias for ``migrationDestination``.", "MigrationDestination"
         )
@@ -1028,6 +1030,8 @@ def item_overview(profile: str) -> dict[str, Any]:
             "Legacy alias for ``urls`` accepted by the importer.", "URLs"
         )
     if profile == "full":
+        properties["passkey"] = ref("Passkey")
+        properties["passkeyId"] = text("Passkey identifier.")
         properties["appIds"] = array(
             text("Application identifier."),
             "Local B5 app identifiers. Not accepted by the official importer, "
@@ -1054,7 +1058,8 @@ def item_overview(profile: str) -> dict[str, Any]:
             "b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, "
             "passkeyId, passkey, MigrationDestination, migrationDestination, "
             "watchtowerExclusions, shortcut, locations. subtitle and url are "
-            "non-Option Strings; appIds is local-only."
+            "non-Option Strings; appIds is local-only. passkey/passkeyId are "
+            "accepted only through force_none and are not imported."
         ),
     )
 
@@ -1145,7 +1150,7 @@ def account(profile: str) -> dict[str, Any]:
 
 
 def definitions(profile: str) -> dict[str, Any]:
-    return {
+    result = {
         "ExportAttributes": export_attributes(profile),
         "AccountAttrs": account_attrs(profile),
         "VaultAttrs": vault_attrs(profile),
@@ -1167,9 +1172,11 @@ def definitions(profile: str) -> dict[str, Any]:
         "PasswordHistoryEntry": password_history_entry(profile),
         "OverviewUrl": overview_url(profile),
         "ItemLocation": item_location(profile),
-        "Passkey": passkey_value(profile),
         "IconKey": icon_key(profile),
     }
+    if profile == "full":
+        result["Passkey"] = passkey_value(profile)
+    return result
 
 
 PROFILE_DESCRIPTIONS = {
@@ -1180,27 +1187,29 @@ PROFILE_DESCRIPTIONS = {
         "and local-only metadata such as appIds."
     ),
     "importer": (
-        "Every field accepted by the official v3 importer, including the "
-        "importer-only details/overview passkey slots and aliases such as LoginField.type, "
-        "DetailHTMLForm.htmlID, OverviewUrl.m, AccountAttrs.fullName and "
-        "MigrationDestination.  Objects allow additional properties because "
-        "the importer's serde visitors ignore unknown keys.  This schema "
-        "describes what the importer can read, not what the official "
-        "exporter writes."
+        "Every field the official v3 importer actually consumes, including "
+        "aliases such as LoginField.type, DetailHTMLForm.htmlID, OverviewUrl.m, "
+        "AccountAttrs.fullName and MigrationDestination. The visitors also "
+        "accept passkey/passkeyId through force_none, but those payloads are "
+        "discarded, so they are excluded here. Objects allow additional "
+        "properties because the importer's serde visitors ignore unknown keys. "
+        "This schema describes what the importer can read, not what the "
+        "official exporter writes."
     ),
     "exporter": (
         "Fields emitted by the official v3 exporter. In the current matrix this "
-        "is the same canonical field set as the official profile: the exporter "
-        "does not emit passkeys, and appIds exists only in the local database. "
+        "is the same canonical field set as the official profile: neither path "
+        "transfers passkeys, and appIds exists only in the local database. "
         "Avatar/icon fields are included when the corresponding files are "
         "present in the ZIP."
     ),
     "full": (
         "All metadata available in the local B5 database, including raw "
         "details/overview objects, trashed/changerUuid/scope/stateRaw/"
-        "validated, the complete document encryption metadata, passkeys and "
-        "appIds. This is a backup profile and is not guaranteed to import into "
-        "the official app."
+        "validated, the complete document encryption metadata, local passkey "
+        "metadata and appIds. This is a backup profile and is not guaranteed "
+        "to import into the official app; in particular the official importer "
+        "discards passkey payloads."
     ),
 }
 
