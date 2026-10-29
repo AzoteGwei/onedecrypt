@@ -13,7 +13,7 @@ from helpers import synthetic_account, sym_jwk
 from onedecrypt.crypto import b64u
 from onedecrypt.database import Account, Item, Vault
 from onedecrypt.decrypt import decrypt_account
-from onedecrypt.pux import build_export_data, item_state, write_1pux
+from onedecrypt.pux import build_export_data, item_state, shape_report, write_1pux
 from onedecrypt.pux_schema import (
     ITEM_KEYS,
     PROFILE_EXPORTER,
@@ -342,3 +342,38 @@ def test_no_files_suppresses_document_warnings():
     assert data["accounts"][0]["vaults"][0]["items"] == []
     assert files == {}
     assert not [w for w in caught if "no locally available file" in str(w.message)]
+
+
+def test_shape_report_omits_values():
+    report = shape_report(
+        {"password": "secret", "count": 3, "items": [{"enabled": True}]}
+    )
+    rendered = json.dumps(report)
+    assert "secret" not in rendered
+    assert report["keys"]["password"] == {"type": "string"}
+    assert report["keys"]["count"] == {"type": "integer"}
+    assert report["keys"]["items"]["items"] == [
+        {"type": "object", "keys": {"enabled": {"type": "boolean"}}}
+    ]
+
+
+def test_date_and_month_year_values_are_typed_integers():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "name": "s",
+                "fields": [
+                    {"title": "Date", "id": "d", "k": "date", "v": 20240131},
+                    {"title": "Month", "id": "m", "k": "monthYear", "v": 202401},
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account, profile=PROFILE_OFFICIAL)
+    fields = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0]["fields"]
+    assert fields[0]["value"] == {"date": 20240131}
+    assert fields[1]["value"] == {"monthYear": 202401}

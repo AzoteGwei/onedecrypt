@@ -150,7 +150,11 @@ def cmd_decrypt(args: argparse.Namespace) -> int:
 
         out = Path(args.out).expanduser() if args.out else Path.cwd() / f"{account.uuid}.1pux"
         path, item_count, file_count = write_1pux(
-            out, account, files_dir, profile=args.schema_profile
+            out,
+            account,
+            files_dir,
+            profile=args.schema_profile,
+            shape_report_path=args.shape_report,
         )
         print(f"Wrote {path} ({item_count} items, {file_count} document file(s))")
         if account.failed_vaults:
@@ -236,6 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
     decrypt_parser.add_argument("--password", help="Master Password (prompted if omitted)")
     decrypt_parser.add_argument("--out", help="output .1pux path")
     decrypt_parser.add_argument("--dump-json", help="also write a plaintext JSON debug dump")
+    decrypt_parser.add_argument(
+        "--shape-report",
+        help="write a value-free JSON type report for debugging import errors",
+    )
     decrypt_parser.add_argument(
         "--files-dir",
         default=None,

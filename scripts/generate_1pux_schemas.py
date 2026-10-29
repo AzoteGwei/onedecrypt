@@ -484,8 +484,18 @@ def section_field_value(profile: str) -> dict[str, Any]:
     variants: list[dict[str, Any]] = [
         variant(
             "address",
-            "Postal address value. The concrete object is an op-model Address.",
-            any_value("Address object."),
+            "Postal address value.",
+            obj(
+                "Address object emitted by the official exporter.",
+                {
+                    "city": text("City."),
+                    "country": text("Country."),
+                    "state": text("State or province."),
+                    "street": text("Street address."),
+                    "zip": text("Postal/ZIP code."),
+                },
+                required=("city", "country", "state", "street", "zip"),
+            ),
         ),
         variant("concealed", "Concealed/secret text.", text("Concealed value.")),
         variant(
@@ -500,11 +510,24 @@ def section_field_value(profile: str) -> dict[str, Any]:
         ),
         variant(
             "date",
-            "Date value. The official model stores an epoch timestamp; older "
-            "exports may use a string.",
-            {"type": ["integer", "string"], "description": "Date value."},
+            "Date value. The official exporter emits an integer or null.",
+            {"type": ["integer", "null"], "description": "Date value."},
         ),
-        variant("email", "Email address.", text("Email address.", format="email")),
+        variant(
+            "email",
+            "Email address with an optional provider label.",
+            obj(
+                "Email object emitted by the official exporter.",
+                {
+                    "email_address": text("Email address.", format="email"),
+                    "provider": {
+                        "type": ["string", "null"],
+                        "description": "Optional email provider label.",
+                    },
+                },
+                required=("email_address",),
+            ),
+        ),
         variant(
             "file",
             "Attachment reference. The importer reads the same DocumentAttributes "
@@ -526,9 +549,8 @@ def section_field_value(profile: str) -> dict[str, Any]:
         ),
         variant(
             "monthYear",
-            "Month/year value. The official model stores YYYYMM as an integer; "
-            "older exports may use a string.",
-            {"type": ["integer", "string"], "description": "Month/year value."},
+            "Month/year value. The official exporter emits an integer or null.",
+            {"type": ["integer", "null"], "description": "Month/year value."},
         ),
         variant("phone", "Phone number.", text("Phone number.")),
         variant(
@@ -539,19 +561,54 @@ def section_field_value(profile: str) -> dict[str, Any]:
         variant(
             "sshKey",
             "SSH key value.",
-            any_value("SSH key object or string."),
+            obj(
+                "SSH key object emitted by the official exporter.",
+                {
+                    "privateKey": text("Private key material."),
+                    "metadata": obj(
+                        "SSH key metadata.",
+                        {
+                            "fingerprint": text("Key fingerprint."),
+                            "keyType": {
+                                "description": "Key type string or an object such as {\"rsa\": \"...\"}.",
+                                "type": ["object", "string"],
+                                "additionalProperties": True,
+                            },
+                            "privateKey": text("Private key material."),
+                            "publicKey": text("Public key material."),
+                        },
+                        additional=True,
+                    ),
+                },
+                additional=True,
+            ),
         ),
         variant(
             "ssoLogin",
             "SSO login value.",
-            any_value("SSO login object or string."),
+            obj(
+                "SSO login object emitted by the official exporter.",
+                {
+                    "provider": text("SSO provider identifier."),
+                    "item": obj(
+                        "Optional linked item.",
+                        {
+                            "itemUuid": text("Linked item UUID."),
+                            "vaultUuid": text("Linked vault UUID."),
+                        },
+                        additional=True,
+                    ),
+                },
+                required=("provider",),
+                additional=True,
+            ),
         ),
         variant("string", "Plain string value.", text("String value.")),
         variant("totp", "One-time-password secret/URI.", text("TOTP value.")),
         variant(
             "unsupported",
-            "A value the importer could not classify. Preserved so no data is lost.",
-            any_value("Unsupported value."),
+            "Unit variant used by the importer for a value it could not classify.",
+            {"type": "null", "description": "The unsupported variant carries no payload."},
         ),
         variant("url", "URL value.", text("URL value.", format="uri-reference")),
     ]
@@ -783,13 +840,18 @@ def item_overview(profile: str) -> dict[str, Any]:
             "Generated subtitle, usually the username or a short summary."
         ),
         "icons": {
-            "type": "object",
             "description": (
-                "Custom icon map keyed by icon slot. The official exporter "
-                "writes the referenced files under ``files/``; onedecrypt "
-                "omits the map because it does not export those blobs."
+                "Custom icon map keyed by icon slot, or null when the item has "
+                "no custom icon. The exporter writes referenced files under "
+                "``files/``; onedecrypt omits custom icon blobs."
             ),
-            "additionalProperties": ref("IconKey"),
+            "oneOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "additionalProperties": ref("IconKey"),
+                },
+            ],
         },
         "shortcut": ref("ItemShortcut"),
         "locations": array(

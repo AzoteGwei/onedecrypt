@@ -320,11 +320,18 @@
           "description": "Generated subtitle, usually the username or a short summary."
         },
         "icons": {
-          "type": "object",
-          "description": "Custom icon map keyed by icon slot. The official exporter writes the referenced files under ``files/``; onedecrypt omits the map because it does not export those blobs.",
-          "additionalProperties": {
-            "$ref": "#/$defs/IconKey"
-          }
+          "description": "Custom icon map keyed by icon slot, or null when the item has no custom icon. The exporter writes referenced files under ``files/``; onedecrypt omits custom icon blobs.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/IconKey"
+              }
+            }
+          ]
         },
         "shortcut": {
           "$ref": "#/$defs/ItemShortcut"
@@ -613,17 +620,40 @@
       "oneOf": [
         {
           "type": "object",
-          "description": "Postal address value. The concrete object is an op-model Address.",
+          "description": "Postal address value.",
           "properties": {
             "address": {
-              "description": "Address object.",
-              "type": [
-                "object",
-                "array",
-                "string",
-                "number",
-                "boolean",
-                "null"
+              "type": "object",
+              "description": "Address object emitted by the official exporter.",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City."
+                },
+                "country": {
+                  "type": "string",
+                  "description": "Country."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "State or province."
+                },
+                "street": {
+                  "type": "string",
+                  "description": "Street address."
+                },
+                "zip": {
+                  "type": "string",
+                  "description": "Postal/ZIP code."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "city",
+                "country",
+                "state",
+                "street",
+                "zip"
               ]
             }
           },
@@ -680,12 +710,12 @@
         },
         {
           "type": "object",
-          "description": "Date value. The official model stores an epoch timestamp; older exports may use a string.",
+          "description": "Date value. The official exporter emits an integer or null.",
           "properties": {
             "date": {
               "type": [
                 "integer",
-                "string"
+                "null"
               ],
               "description": "Date value."
             }
@@ -698,12 +728,29 @@
         },
         {
           "type": "object",
-          "description": "Email address.",
+          "description": "Email address with an optional provider label.",
           "properties": {
             "email": {
-              "type": "string",
-              "description": "Email address.",
-              "format": "email"
+              "type": "object",
+              "description": "Email object emitted by the official exporter.",
+              "properties": {
+                "email_address": {
+                  "type": "string",
+                  "description": "Email address.",
+                  "format": "email"
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Optional email provider label."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "email_address"
+              ]
             }
           },
           "additionalProperties": false,
@@ -802,12 +849,12 @@
         },
         {
           "type": "object",
-          "description": "Month/year value. The official model stores YYYYMM as an integer; older exports may use a string.",
+          "description": "Month/year value. The official exporter emits an integer or null.",
           "properties": {
             "monthYear": {
               "type": [
                 "integer",
-                "string"
+                "null"
               ],
               "description": "Month/year value."
             }
@@ -860,15 +907,42 @@
           "description": "SSH key value.",
           "properties": {
             "sshKey": {
-              "description": "SSH key object or string.",
-              "type": [
-                "object",
-                "array",
-                "string",
-                "number",
-                "boolean",
-                "null"
-              ]
+              "type": "object",
+              "description": "SSH key object emitted by the official exporter.",
+              "properties": {
+                "privateKey": {
+                  "type": "string",
+                  "description": "Private key material."
+                },
+                "metadata": {
+                  "type": "object",
+                  "description": "SSH key metadata.",
+                  "properties": {
+                    "fingerprint": {
+                      "type": "string",
+                      "description": "Key fingerprint."
+                    },
+                    "keyType": {
+                      "description": "Key type string or an object such as {\"rsa\": \"...\"}.",
+                      "type": [
+                        "object",
+                        "string"
+                      ],
+                      "additionalProperties": true
+                    },
+                    "privateKey": {
+                      "type": "string",
+                      "description": "Private key material."
+                    },
+                    "publicKey": {
+                      "type": "string",
+                      "description": "Public key material."
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
             }
           },
           "additionalProperties": false,
@@ -882,14 +956,32 @@
           "description": "SSO login value.",
           "properties": {
             "ssoLogin": {
-              "description": "SSO login object or string.",
-              "type": [
-                "object",
-                "array",
-                "string",
-                "number",
-                "boolean",
-                "null"
+              "type": "object",
+              "description": "SSO login object emitted by the official exporter.",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "SSO provider identifier."
+                },
+                "item": {
+                  "type": "object",
+                  "description": "Optional linked item.",
+                  "properties": {
+                    "itemUuid": {
+                      "type": "string",
+                      "description": "Linked item UUID."
+                    },
+                    "vaultUuid": {
+                      "type": "string",
+                      "description": "Linked vault UUID."
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "provider"
               ]
             }
           },
@@ -931,18 +1023,11 @@
         },
         {
           "type": "object",
-          "description": "A value the importer could not classify. Preserved so no data is lost.",
+          "description": "Unit variant used by the importer for a value it could not classify.",
           "properties": {
             "unsupported": {
-              "description": "Unsupported value.",
-              "type": [
-                "object",
-                "array",
-                "string",
-                "number",
-                "boolean",
-                "null"
-              ]
+              "type": "null",
+              "description": "The unsupported variant carries no payload."
             }
           },
           "additionalProperties": false,

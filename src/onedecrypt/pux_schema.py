@@ -238,13 +238,61 @@ def _validate_section_value(value: Any, where: str) -> None:
     inner = value[tag]
     if tag == "file":
         _validate_document_attributes(inner, f"{where}.file")
+    elif tag == "email":
+        e_where = f"{where}.email"
+        _keys(inner, {"email_address", "provider"}, e_where, required={"email_address"})
+        _require_string(inner["email_address"], f"{e_where}.email_address")
+        if "provider" in inner and inner["provider"] is not None:
+            _require_string(inner["provider"], f"{e_where}.provider")
+    elif tag == "address":
+        a_where = f"{where}.address"
+        _require(isinstance(inner, dict), f"{a_where} must be an object")
+        for key, child in inner.items():
+            _require(
+                key in {"city", "country", "state", "street", "zip"},
+                f"{a_where}: unexpected field {key}",
+            )
+            _require_string(child, f"{a_where}.{key}")
+    elif tag == "sshKey":
+        _require(isinstance(inner, dict), f"{where}.sshKey must be an object")
+        if "privateKey" in inner:
+            _require_string(inner["privateKey"], f"{where}.sshKey.privateKey")
+        if "metadata" in inner:
+            meta = inner["metadata"]
+            _require(isinstance(meta, dict), f"{where}.sshKey.metadata must be an object")
+            for key, child in meta.items():
+                _require(
+                    key in {"fingerprint", "keyType", "privateKey", "publicKey"},
+                    f"{where}.sshKey.metadata: unexpected field {key}",
+                )
+                if key == "keyType" and isinstance(child, dict):
+                    for k, v in child.items():
+                        _require_string(v, f"{where}.sshKey.metadata.keyType.{k}")
+                elif child is not None:
+                    _require_string(child, f"{where}.sshKey.metadata.{key}")
+    elif tag == "ssoLogin":
+        s_where = f"{where}.ssoLogin"
+        _require(isinstance(inner, dict), f"{s_where} must be an object")
+        for key, child in inner.items():
+            _require(key in {"provider", "item"}, f"{s_where}: unexpected field {key}")
+            if key == "provider":
+                _require_string(child, f"{s_where}.provider")
+            elif isinstance(child, dict):
+                for k, v in child.items():
+                    _require(
+                        k in {"itemUuid", "vaultUuid"},
+                        f"{s_where}.item: unexpected field {k}",
+                    )
+                    _require_string(v, f"{s_where}.item.{k}")
     elif tag in SECTION_STRING_TAGS:
         _require_string(inner, f"{where}.{tag}")
     elif tag in ("date", "monthYear"):
         _require(
-            isinstance(inner, (int, str)) and not isinstance(inner, bool),
-            f"{where}.{tag} must be an integer or string",
+            inner is None or (isinstance(inner, int) and not isinstance(inner, bool)),
+            f"{where}.{tag} must be an integer or null",
         )
+    elif tag == "unsupported":
+        _require(inner is None, f"{where}.unsupported must be null")
     else:
         _require(
             isinstance(inner, (dict, str)),

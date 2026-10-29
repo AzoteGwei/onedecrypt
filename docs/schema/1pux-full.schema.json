@@ -335,11 +335,18 @@
           "description": "Generated subtitle, usually the username or a short summary."
         },
         "icons": {
-          "type": "object",
-          "description": "Custom icon map keyed by icon slot. The official exporter writes the referenced files under ``files/``; onedecrypt omits the map because it does not export those blobs.",
-          "additionalProperties": {
-            "$ref": "#/$defs/IconKey"
-          }
+          "description": "Custom icon map keyed by icon slot, or null when the item has no custom icon. The exporter writes referenced files under ``files/``; onedecrypt omits custom icon blobs.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/IconKey"
+              }
+            }
+          ]
         },
         "shortcut": {
           "$ref": "#/$defs/ItemShortcut"
