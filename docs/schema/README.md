@@ -184,9 +184,14 @@ An SSH key is a typed `SectionFieldValue`, not an `ItemDetails` field:
 `{"privateKey": ..., "metadata": {...}}`; `metadata` is optional, and the
 importer derives the public key, fingerprint and key type from `privateKey`
 when it is absent. onedecrypt also accepts older local rows that store the
-private key as a bare string or under an `ssh_key`/`private_key` tag and emits
-the typed value so the official app creates an SSH key element instead of a
-plain text field.
+key as a bare string, a single-key `concealed`/`string` wrapper, or under an
+`ssh_key`/`private_key` tag, and emits the typed value so the official app
+creates an SSH key element instead of a plain text field. For category 114,
+a PEM-looking value is recognized even when the local row still calls the
+field `string` or `concealed`. A plain string/concealed field is also treated
+as an SSH key when its id/title contains `private` and `key`, unless the label
+contains a whole-word `passphrase`, `password` or `pin`; a PEM/private-key
+value still wins over that label exclusion.
 
 ## Validating an export
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import time
 import warnings
 import zipfile
@@ -94,6 +95,7 @@ SECTION_VALUE_ALIASES = {
     "privateKey": "sshKey",
     "private_key": "sshKey",
 }
+PASSWORD_LABEL_RE = re.compile(r"(?<![a-z0-9])(passphrase|password|pin)(?![a-z0-9])")
 WATCHTOWER_KEYS = {
     "compromised",
     "vulnerable",
@@ -242,7 +244,19 @@ def _normalize_key_type(value: object) -> str | dict:
 def _looks_like_private_key(value: object) -> bool:
     """Return true for private-key text or an object carrying one."""
     if isinstance(value, dict):
-        return any(key in value for key in ("privateKey", "private_key"))
+        if any(key in value for key in ("privateKey", "private_key")):
+            return True
+        if len(value) == 1:
+            only, inner = next(iter(value.items()))
+            if only in (
+                "sshKey",
+                "concealed",
+                "string",
+                "privateKey",
+                "private_key",
+            ):
+                return _looks_like_private_key(inner)
+        return False
     if not isinstance(value, str):
         return False
     head = value.lstrip()[:80]
@@ -258,6 +272,10 @@ def _normalize_ssh_key(value: object) -> dict | None:
     The importer can derive the metadata when it is absent, so ``metadata`` is
     only emitted when the source actually contains it.
     """
+    if isinstance(value, dict) and len(value) == 1:
+        only, wrapped = next(iter(value.items()))
+        if only in ("sshKey", "concealed", "string", "privateKey", "private_key"):
+            value = wrapped
     if isinstance(value, str):
         private_key = value
         inner: dict = {}
@@ -605,13 +623,17 @@ def _convert_section_field(
         value = None
 
     # The local model represents SSH keys as a SectionFieldValue variant.
-    # Older B5 rows occasionally lost the kind tag but still identify the
-    # field as the category-114 private key.  Recover the variant so the
-    # importer creates an SSH key element instead of a plain text field.
-    if kind is None and category_uuid == "114":
+    # Older B5 rows occasionally store the private key as plain/concealed
+    # text or lose the kind tag.  Category 114 plus the value (PEM/privateKey)
+    # or the field's id/title identify it.  Recover the typed variant so the
+    # importer creates an SSH key element instead of a plain text field.  Do
+    # not rewrite a passphrase or other password-like field that merely
+    # mentions a private key; key-looking values still win over the label.
+    if category_uuid == "114" and kind in (None, "string", "concealed"):
         label = f"{field_id} {title}".lower()
+        password_like = PASSWORD_LABEL_RE.search(label) is not None
         if _looks_like_private_key(value) or (
-            "private" in label and "key" in label
+            not password_like and "private" in label and "key" in label
         ):
             kind = "sshKey"
 

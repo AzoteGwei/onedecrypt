@@ -235,6 +235,36 @@ def test_scalar_ssh_private_key_becomes_ssh_key_value():
                             "keyType": "ed25519",
                         },
                     },
+                    {
+                        "title": "SSH key material",
+                        "id": "ssh_material",
+                        "k": "concealed",
+                        "v": pem,
+                    },
+                    {
+                        "title": "SSH key material string",
+                        "id": "ssh_material_string",
+                        "k": "string",
+                        "v": pem,
+                    },
+                    {
+                        "title": "SSH note",
+                        "id": "private_key_passphrase",
+                        "k": "concealed",
+                        "v": "hunter2",
+                    },
+                    {
+                        "title": "SSH key wrapped",
+                        "id": "ssh_key_wrapped",
+                        "k": "string",
+                        "v": {"concealed": pem},
+                    },
+                    {
+                        "title": "SSH key with extra keys",
+                        "id": "ssh_key_extra",
+                        "k": "sshKey",
+                        "v": {"sshKey": {"privateKey": pem}, "extra": 1},
+                    },
                 ],
             }
         ]
@@ -257,6 +287,11 @@ def test_scalar_ssh_private_key_becomes_ssh_key_value():
             },
         }
     }
+    assert fields[4]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[5]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[6]["value"] == {"concealed": "hunter2"}
+    assert fields[7]["value"] == {"sshKey": {"privateKey": pem}}
+    assert fields[8]["value"] == {"sshKey": {"privateKey": pem}}
     validate_export_data(data, PROFILE_OFFICIAL)
 
 

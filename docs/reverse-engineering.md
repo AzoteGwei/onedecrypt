@@ -153,9 +153,14 @@ The strict 1PUX v3 exporter converts the login `fields` array to
 `title/id/value/...` form, maps `ainfo` to `subtitle`, and emits only the
 fields present in the selected schema profile.  SSH keys are a
 `SectionFieldValue` variant, not an `ItemDetails` field; older local rows may
-store the private key as bare text, so the exporter normalizes that to
+store the key as bare text, a single-key `concealed`/`string` wrapper, or a
+`ssh_key`/`private_key` tag, so the exporter normalizes all of those to
 `{"sshKey": {"privateKey": ...}}`.  The importer derives the missing public
-key/fingerprint/key type from the private key.
+key/fingerprint/key type from the private key.  For category 114, a
+PEM/private-key value is recognized even when the row still calls the field
+`string` or `concealed`; a plain field whose id/title mentions a private key
+is also converted, except for whole-word passphrase/password/pin labels, and
+key-looking values take precedence over that exclusion.
 
 Passkeys are local-only.  The official exporter drops the local
 `Option<Passkey>` when it builds `ItemDetails`, and the importer accepts the
