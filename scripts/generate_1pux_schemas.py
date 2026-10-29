@@ -11,7 +11,8 @@ declarative model so the four profiles cannot drift accidentally:
 
 ``importer``
     Every field the official importer's serde visitors accept, including the
-    importer-only ``passkey`` field and legacy aliases.
+    importer-only overview ``passkey``/``passkeyId`` slots (force_none) and
+    legacy aliases.
 
 ``exporter``
     Fields the official exporter emits.  In the current reverse-engineering
@@ -243,9 +244,10 @@ def vault_attrs(profile: str) -> dict[str, Any]:
             "name": text("Vault name."),
             "type": vault_type,
         },
-        # Vault uuid/avatar are Option fields in the exporter's attrs model.
+        # VaultAttrs uuid/name/type are required; desc/avatar are Option
+        # fields in the exporter's attrs model.
         required=(
-            ("desc", "name", "type")
+            ("uuid", "name", "type")
             if profile in ("official", "exporter")
             else ()
         ),
@@ -338,7 +340,7 @@ def document_attributes(profile: str) -> dict[str, Any]:
         ),
         "documentId": text(
             "Document identifier. Together with fileName it forms the ZIP "
-            "entry name."
+            "entry name. The importer models this as Option<Uuid>."
         ),
         "decryptedSize": integer(
             "Plaintext size in bytes.", minimum=0
@@ -402,16 +404,17 @@ def document_attributes(profile: str) -> dict[str, Any]:
         "``details.sections[].fields[].value.file``.",
         canonical,
         required=(
-            ("fileName", "documentId")
+            ("fileName", "decryptedSize")
             if profile in ("official", "exporter")
             else ()
         ),
         # The v2 DocumentAttributes visitor rejects unknown fields.
         additional=profile == "full",
         comment=(
-            "DocumentAttributes deserializer fields: fileName, documentId, "
-            "signingKey, decryptedSize/unencryptedSize, encryptedSize, "
-            "integrityHash, encryptionKey, nonce, uti."
+            "DocumentAttributes serializer (0x4723be0) always writes fileName "
+            "and decryptedSize; documentId is Option<Uuid>. The deserializer "
+            "also accepts signingKey, decryptedSize/unencryptedSize, "
+            "encryptedSize, integrityHash, encryptionKey, nonce and uti."
         ),
     )
 
@@ -420,10 +423,15 @@ def overview_url(profile: str) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "label": text("Display label for the URL; empty string when unlabeled."),
         "url": text("URL value.", format="uri-reference"),
-        "mode": text(
-            "1Password URL matching mode, for example anywhereOnWebsite or exact.",
-            examples=["anywhereOnWebsite", "exact", "never"],
-        ),
+        "mode": {
+            "type": "string",
+            "description": (
+                "1Password URL matching mode. The exporter's "
+                "``From<ItemUrl>`` conversion writes the lowercase "
+                "ItemUrlMode spelling."
+            ),
+            "enum": ["default", "host", "never"],
+        },
     }
     if profile in ("importer", "full"):
         properties["l"] = alias_field(
@@ -439,7 +447,9 @@ def overview_url(profile: str) -> dict[str, Any]:
         "One entry of ``overview.urls``. The canonical spelling uses "
         "``label``/``url``/``mode``.",
         properties,
-        required=("url",) if profile in ("official", "exporter") else (),
+        required=("label", "url", "mode")
+        if profile in ("official", "exporter")
+        else (("url",) if profile == "importer" else ()),
         # The v2 OverviewUrl visitor rejects unknown fields.
         additional=profile == "full",
     )
@@ -448,17 +458,43 @@ def overview_url(profile: str) -> dict[str, Any]:
 def input_traits(profile: str) -> dict[str, Any]:
     return obj(
         "Keyboard/autocorrection hints for a section field "
-        "(``details.sections[].fields[].inputTraits``). Values are template "
-        "strings, not booleans; the importer accepts free-form strings.",
+        "(``details.sections[].fields[].inputTraits``). The importer's "
+        "DetailSectionFieldInputTraits struct has three non-Option enum fields; "
+        "the official exporter always writes all three.",
         {
-            "keyboard": text("Keyboard type hint, e.g. default or numberPad."),
-            "correction": text("Autocorrection hint, e.g. default or no."),
-            "capitalization": text(
-                "Autocapitalization hint, e.g. default or sentences."
-            ),
+            "keyboard": {
+                "type": "string",
+                "description": "Keyboard type hint.",
+                "enum": [
+                    "default",
+                    "numberPad",
+                    "namePhonePad",
+                    "numbersAndPunctuation",
+                    "emailAddress",
+                    "uRL",
+                ],
+            },
+            "correction": {
+                "type": "string",
+                "description": "Autocorrection hint.",
+                "enum": ["default", "yes", "no"],
+            },
+            "capitalization": {
+                "type": "string",
+                "description": "Autocapitalization hint.",
+                "enum": ["default", "none", "words", "sentences", "allCharacters"],
+            },
         },
+        required=("keyboard", "correction", "capitalization")
+        if profile != "full"
+        else (),
         # The v2 InputTraits visitor rejects unknown fields.
         additional=profile == "full",
+        comment=(
+            "DetailSectionFieldInputTraits (0x492fc80) requires keyboard, "
+            "correction and capitalization; absent values default to "
+            "'default'."
+        ),
     )
 
 
@@ -525,7 +561,7 @@ def section_field_value(profile: str) -> dict[str, Any]:
                         "description": "Optional email provider label.",
                     },
                 },
-                required=("email_address",),
+                required=("email_address", "provider"),
             ),
         ),
         variant(
@@ -537,15 +573,47 @@ def section_field_value(profile: str) -> dict[str, Any]:
         ),
         variant(
             "formattedText",
-            "Formatted text value.",
-            any_value("Formatted text object or string."),
+            "Formatted text value. The importer's FormattedTextAttributes struct "
+            "has six required fields.",
+            obj(
+                "FormattedTextAttributes object.",
+                {
+                    "content": text("Text content."),
+                    "content_type": {
+                        "type": "string",
+                        "enum": ["Lexical", "Text"],
+                    },
+                    "content_format": {
+                        "type": "string",
+                        "enum": ["FormattedText", "PlainText"],
+                    },
+                    "format_version": integer("Format version."),
+                    "plain_text_display_value": text("Plain-text rendering."),
+                    "html_display_value": text("HTML rendering."),
+                },
+                required=(
+                    "content",
+                    "content_type",
+                    "content_format",
+                    "format_version",
+                    "plain_text_display_value",
+                    "html_display_value",
+                ),
+            ),
         ),
         variant("gender", "Gender value.", text("Gender value.")),
         variant("menu", "Menu selection.", text("Menu value.")),
         variant(
             "managedApplication",
             "Managed-application credential value.",
-            any_value("Managed application value."),
+            obj(
+                "ManagedApplicationAttributes object.",
+                {
+                    "applicationUuid": text("Managed application UUID."),
+                    "loginInitiationUrl": text("Login initiation URL."),
+                },
+                required=("applicationUuid", "loginInitiationUrl"),
+            ),
         ),
         variant(
             "monthYear",
@@ -555,8 +623,9 @@ def section_field_value(profile: str) -> dict[str, Any]:
         variant("phone", "Phone number.", text("Phone number.")),
         variant(
             "reference",
-            "Reference to another item/field.",
-            any_value("Reference object or string."),
+            "Reference to another item/field. The importer's variant is a "
+            "newtype around a string, not an object.",
+            text("Reference value."),
         ),
         variant(
             "sshKey",
@@ -566,21 +635,41 @@ def section_field_value(profile: str) -> dict[str, Any]:
                 {
                     "privateKey": text("Private key material."),
                     "metadata": obj(
-                        "SSH key metadata.",
+                        "SSH key metadata. All four fields are required when "
+                        "the metadata object is present.",
                         {
                             "fingerprint": text("Key fingerprint."),
                             "keyType": {
-                                "description": "Key type string or an object such as {\"rsa\": \"...\"}.",
-                                "type": ["object", "string"],
-                                "additionalProperties": True,
+                                "description": (
+                                    "SshKeyType: the ed25519 unit variant is a "
+                                    "string; the rsa variant is an object."
+                                ),
+                                "oneOf": [
+                                    {"const": "ed25519", "type": "string"},
+                                    obj(
+                                        "RSA key type.",
+                                        {
+                                            "rsa": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "RsaUnsupported",
+                                                    "Rsa2048",
+                                                    "Rsa3072",
+                                                    "Rsa4096",
+                                                ],
+                                            }
+                                        },
+                                        required=("rsa",),
+                                    ),
+                                ],
                             },
                             "privateKey": text("Private key material."),
                             "publicKey": text("Public key material."),
                         },
-                        additional=True,
+                        required=("privateKey", "publicKey", "fingerprint", "keyType"),
                     ),
                 },
-                additional=True,
+                required=("privateKey",),
             ),
         ),
         variant(
@@ -596,11 +685,10 @@ def section_field_value(profile: str) -> dict[str, Any]:
                             "itemUuid": text("Linked item UUID."),
                             "vaultUuid": text("Linked vault UUID."),
                         },
-                        additional=True,
+                        required=("itemUuid", "vaultUuid"),
                     ),
                 },
                 required=("provider",),
-                additional=True,
             ),
         ),
         variant("string", "Plain string value.", text("String value.")),
@@ -654,14 +742,25 @@ def detail_section_field(profile: str) -> dict[str, Any]:
         "long-form keys (title/id/value/...); short B5 keys are not part of "
         "the canonical profiles.",
         properties,
-        required=("title", "id") if profile in ("official", "exporter") else (),
+        required=(
+            "title",
+            "id",
+            "value",
+            "guarded",
+            "multiline",
+            "dontGenerate",
+            "inputTraits",
+        )
+        if profile in ("official", "exporter")
+        else (),
         # The v2 DetailSectionField visitor rejects unknown fields.
         additional=profile == "full",
         comment=(
             "DetailSectionField importer fields: title, id, value, "
             "indexAtSource, guarded, multiline, clipboardFilter, dontGenerate, "
             "inputTraits, placeholder. keyboard/correction live inside "
-            "inputTraits, not at the field level."
+            "inputTraits, not at the field level. The official exporter writes "
+            "value/guarded/multiline/dontGenerate/inputTraits for every field."
         ),
     )
 
@@ -682,12 +781,14 @@ def detail_section(profile: str) -> dict[str, Any]:
     return obj(
         "One group of item fields (``details.sections[]``).",
         properties,
-        required=("fields",) if profile in ("official", "exporter") else (),
+        required=("title", "fields")
+        if profile in ("official", "exporter")
+        else (),
         # The v2 DetailSection visitor rejects unknown fields.
         additional=profile == "full",
         comment=(
             "DetailSection importer fields: title, name, fields, "
-            "hideAddAnotherField."
+            "hideAddAnotherField. title is required by the importer."
         ),
     )
 
@@ -726,16 +827,21 @@ def item_details(profile: str) -> dict[str, Any]:
     if profile in ("importer", "full"):
         properties["passkey"] = ref("Passkey")
     return obj(
-        "Item details (``items[].details``). Every field is optional; a "
-        "Document item typically has only documentAttributes, and a Password "
-        "item typically has only password.",
+        "Item details (``items[].details``). The official exporter always "
+        "writes loginFields, sections and passwordHistory, possibly empty.",
         properties,
+        required=(
+            ("loginFields", "sections", "passwordHistory")
+            if profile in ("official", "exporter")
+            else ()
+        ),
         # The v2 ItemDetails visitor rejects unknown fields.
         additional=profile == "full",
         comment=(
             "ItemDetails is the v2 struct reused by v3. The importer field "
             "visitor accepts htmlForm, loginFields, notesPlain, sections, "
-            "passwordHistory, password, passkey and documentAttributes."
+            "passwordHistory, password, passkey and documentAttributes. "
+            "The importer deserializes passkey through force_none."
         ),
     )
 
@@ -824,6 +930,33 @@ def migration_destination(profile: str) -> dict[str, Any]:
     )
 
 
+def item_location(profile: str) -> dict[str, Any]:
+    if profile == "full":
+        return any_value(
+            "Raw local ItemLocation value preserved by the full backup profile."
+        )
+    return obj(
+        "Saved location entry. The importer's ItemLocation enum has one "
+        "externally tagged variant, ``Gps``.",
+        {
+            "Gps": obj(
+                "GPS location payload.",
+                {
+                    "id": text("Location identifier."),
+                    "location": any_value(
+                        "Optional coordinate payload; the official exporter "
+                        "may write null."
+                    ),
+                },
+                required=("id", "location"),
+                additional=profile == "full",
+            ),
+        },
+        required=("Gps",),
+        additional=profile == "full",
+    )
+
+
 def item_overview(profile: str) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "title": text("Item title shown in the item list."),
@@ -855,15 +988,12 @@ def item_overview(profile: str) -> dict[str, Any]:
         },
         "shortcut": ref("ItemShortcut"),
         "locations": array(
-            any_value("Location object."),
-            "Locations associated with the item.",
+            ref("ItemLocation"),
+            "Saved locations associated with the item.",
         ),
         "b5UserUuid": text(
             "B5 user UUID. The official importer accepts both this spelling "
             "and ``b5UserUUID``."
-        ),
-        "b5UserUUID": text(
-            "Alias spelling of ``b5UserUuid`` accepted by the official importer."
         ),
         "watchtowerExclusions": {
             "description": (
@@ -881,6 +1011,11 @@ def item_overview(profile: str) -> dict[str, Any]:
         ),
     }
     if profile in ("importer", "full"):
+        properties["b5UserUUID"] = alias_field(
+            "Alias spelling of ``b5UserUuid`` accepted by the official "
+            "importer.",
+            "b5UserUUID",
+        )
         properties["passkey"] = ref("Passkey")
         properties["passkeyId"] = text("Passkey identifier.")
         properties["MigrationDestination"] = alias_field(
@@ -903,14 +1038,23 @@ def item_overview(profile: str) -> dict[str, Any]:
         "the canonical keys; the importer additionally accepts several "
         "legacy spellings.",
         properties,
-        required=("title",) if profile in ("official", "exporter") else (),
+        required=(
+            "title",
+            "url",
+            "subtitle",
+            "icons",
+            "watchtowerExclusions",
+        )
+        if profile in ("official", "exporter")
+        else (("title",) if profile == "importer" else ()),
         # The v2 ItemOverview visitor rejects unknown fields.
         additional=profile == "full",
         comment=(
             "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, "
             "b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, "
             "passkeyId, passkey, MigrationDestination, migrationDestination, "
-            "watchtowerExclusions, shortcut, locations. appIds is local-only."
+            "watchtowerExclusions, shortcut, locations. subtitle and url are "
+            "non-Option Strings; appIds is local-only."
         ),
     )
 
@@ -1022,6 +1166,7 @@ def definitions(profile: str) -> dict[str, Any]:
         "DetailHtmlForm": html_form(profile),
         "PasswordHistoryEntry": password_history_entry(profile),
         "OverviewUrl": overview_url(profile),
+        "ItemLocation": item_location(profile),
         "Passkey": passkey_value(profile),
         "IconKey": icon_key(profile),
     }
@@ -1036,7 +1181,7 @@ PROFILE_DESCRIPTIONS = {
     ),
     "importer": (
         "Every field accepted by the official v3 importer, including the "
-        "importer-only passkey field and aliases such as LoginField.type, "
+        "importer-only details/overview passkey slots and aliases such as LoginField.type, "
         "DetailHTMLForm.htmlID, OverviewUrl.m, AccountAttrs.fullName and "
         "MigrationDestination.  Objects allow additional properties because "
         "the importer's serde visitors ignore unknown keys.  This schema "
@@ -1074,13 +1219,17 @@ def build_schema(profile: str) -> dict[str, Any]:
         "$comment": (
             "Recovered from the shipped 1Password desktop core "
             "(op_import_export::models::translation::onepux::v2/v3). "
-            "Primary importer visitors: 0x4740aa0 (ItemDetails), "
+            "Primary importer visitors (nm addresses): 0x4740aa0 (ItemDetails), "
             "0x4740d10 (ItemOverview), 0x4740760 (DetailSection), "
             "0x47414a0 (DetailSectionField), 0x4740830 (DocumentAttributes), "
             "0x47412e0 (LoginField), 0x4740370 (OverviewUrl), "
-            "0x4740fd0 (SectionFieldValue). Primary exporter path: "
-            "0x4c4fb70 (onepux::export closure) and 0x6173620 "
-            "(ItemDetails::from). File entries use "
+            "0x4740fd0 (SectionFieldValue), 0x492fc80 (InputTraits). "
+            "Required-field evidence: ItemOverview.subtitle missing-field call "
+            "at 0x4587208; DetailSectionField title/value/id/guarded at "
+            "0x43e01xx; DocumentAttributes fileName/decryptedSize at "
+            "0x4324f87/0x432505d; InputTraits keyboard/correction/capitalization "
+            "via 0x492fc80. Main exporter path: 0x4c4fb70 (onepux::export "
+            "closure) and 0x6173620 (ItemDetails::from). File entries use "
             "``files/<documentId>__<fileName>`` (two underscores); the "
             "format string is at 0x11f79ac, its call site is 0x4c52c4a, and "
             "the importer lookup is 0x4535aae."

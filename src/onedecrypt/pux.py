@@ -154,21 +154,233 @@ def _section_text(value: object) -> str:
     return _value_to_text(value)
 
 
+def _text_value(value: object, default: str = "") -> str:
+    """Coerce a scalar-ish value to text without dumping JSON for objects."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return default
+
+
+def _normalize_address(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "street": _text_value(
+            value.get("street", value.get("streetAddress", value.get("street_address")))
+        ),
+        "city": _text_value(value.get("city")),
+        "country": _text_value(value.get("country", value.get("territory"))),
+        "zip": _text_value(value.get("zip", value.get("postalCode"))),
+        "state": _text_value(value.get("state", value.get("territory"))),
+    }
+
+
+RSA_KEY_SIZES = {
+    "2048": "Rsa2048",
+    "3072": "Rsa3072",
+    "4096": "Rsa4096",
+    "rsa2048": "Rsa2048",
+    "rsa3072": "Rsa3072",
+    "rsa4096": "Rsa4096",
+    "rsa_2048": "Rsa2048",
+    "rsa_3072": "Rsa3072",
+    "rsa_4096": "Rsa4096",
+    "rsa-2048": "Rsa2048",
+    "rsa-3072": "Rsa3072",
+    "rsa-4096": "Rsa4096",
+    "rsaunsupported": "RsaUnsupported",
+    "unsupported": "RsaUnsupported",
+}
+
+
+def _normalize_rsa_size(value: object) -> str:
+    if isinstance(value, dict):
+        value = value.get("bits", value.get("size", value.get("keySize")))
+    return RSA_KEY_SIZES.get(_text_value(value).strip().lower(), "RsaUnsupported")
+
+
+def _normalize_key_type(value: object) -> str | dict:
+    """Normalize op_ssh_key_types::SshKeyType.
+
+    The wire enum is externally tagged: the unit variant serializes as
+    ``"ed25519"`` and the ``rsa`` variant as ``{"rsa": "<RsaKeySize>"}``.
+    ``RsaKeySize`` serializes as ``Rsa2048``/``Rsa3072``/``Rsa4096``/
+    ``RsaUnsupported``.
+    """
+    if isinstance(value, dict):
+        if "rsa" in value:
+            return {"rsa": _normalize_rsa_size(value["rsa"])}
+        if "ed25519" in value:
+            return "ed25519"
+        variant = _text_value(value.get("type", value.get("variant"))).strip().lower()
+        if variant == "rsa":
+            return {"rsa": _normalize_rsa_size(value)}
+        return "ed25519"
+    text = _text_value(value).strip()
+    lowered = text.lower()
+    if not lowered or lowered in {"ed25519", "ed-25519", "ed 25519"}:
+        return "ed25519"
+    if lowered == "rsa" or lowered.startswith("rsa"):
+        return {"rsa": _normalize_rsa_size(lowered)}
+    return "ed25519"
+
+
+def _normalize_ssh_key(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    inner = value.get("sshKey") if isinstance(value.get("sshKey"), dict) else value
+    private_key = _text_value(
+        inner.get("privateKey", inner.get("private_key", inner.get("value")))
+    )
+    metadata = inner.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return {
+        "privateKey": private_key,
+        "metadata": {
+            "privateKey": _text_value(
+                metadata.get("privateKey", metadata.get("private_key")),
+                private_key,
+            ),
+            "publicKey": _text_value(
+                metadata.get("publicKey", metadata.get("public_key"))
+            ),
+            "fingerprint": _text_value(metadata.get("fingerprint")),
+            "keyType": _normalize_key_type(
+                metadata.get("keyType", metadata.get("key_type"))
+            ),
+        },
+    }
+
+
+def _normalize_sso_login(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {"provider": _text_value(value.get("provider"))}
+    item = value.get("item")
+    if isinstance(item, dict):
+        item_uuid = _text_value(
+            item.get("itemUuid", item.get("item_uuid", item.get("uuid")))
+        )
+        vault_uuid = _text_value(item.get("vaultUuid", item.get("vault_uuid")))
+        if item_uuid and vault_uuid:
+            result["item"] = {"itemUuid": item_uuid, "vaultUuid": vault_uuid}
+    return result
+
+
+CONTENT_TYPES = {"text": "Text", "lexical": "Lexical"}
+CONTENT_FORMATS = {
+    "formattedtext": "FormattedText",
+    "formatted_text": "FormattedText",
+    "plaintext": "PlainText",
+    "plain_text": "PlainText",
+}
+
+
+def _normalize_formatted_text(value: object) -> dict:
+    if not isinstance(value, dict):
+        value = {"content": _section_text(value)}
+    content = _text_value(
+        value.get(
+            "content",
+            value.get("plain_text_display_value", value.get("plainTextDisplayValue")),
+        )
+    )
+    content_type = _text_value(
+        value.get("content_type", value.get("contentType")), "Text"
+    )
+    content_type = CONTENT_TYPES.get(content_type.strip().lower(), "Text")
+    content_format = _text_value(
+        value.get("content_format", value.get("contentFormat")), "PlainText"
+    )
+    content_format = CONTENT_FORMATS.get(
+        content_format.strip().lower(), "PlainText"
+    )
+    format_version = _as_int(
+        value.get("format_version", value.get("formatVersion"))
+    )
+    plain = _text_value(
+        value.get(
+            "plain_text_display_value",
+            value.get("plainTextDisplayValue", content),
+        )
+    )
+    html = _text_value(
+        value.get("html_display_value", value.get("htmlDisplayValue", plain))
+    )
+    return {
+        "content": content,
+        "content_type": content_type,
+        "content_format": content_format,
+        "format_version": 0 if format_version is None else format_version,
+        "plain_text_display_value": plain,
+        "html_display_value": html,
+    }
+
+
+def _normalize_managed_application(value: object) -> dict:
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "applicationUuid": _text_value(
+            value.get(
+                "applicationUuid",
+                value.get(
+                    "applicationUUID",
+                    value.get("application_uuid", value.get("uuid")),
+                ),
+            )
+        ),
+        "loginInitiationUrl": _text_value(
+            value.get(
+                "loginInitiationUrl",
+                value.get(
+                    "loginInitiationURL",
+                    value.get("login_initiation_url", value.get("url")),
+                ),
+            )
+        ),
+    }
+
+
 def _normalize_section_value(kind: object, value: object) -> object:
     """Return a valid externally tagged SectionFieldValue object.
 
-    The official importer deserializes ``value`` as an enum with typed inner
-    payloads.  B5 rows sometimes store a bare scalar, and several variants use
-    nested object shapes.  Normalize those shapes here so serde does not reject
-    the whole data model.
+    The official importer deserializes ``value`` as an externally tagged enum
+    with typed inner payloads.  B5 rows sometimes store a bare scalar, and
+    several variants use nested object shapes.  Normalize those shapes here so
+    serde does not reject the whole data model.
     """
     tag = str(kind) if isinstance(kind, str) and kind in SECTION_VALUE_TAGS else None
+
+    # B5 rows and synthetic fixtures may already store the externally tagged
+    # object.  Unwrap it before normalizing the payload.
+    if isinstance(value, dict) and len(value) == 1:
+        only = next(iter(value))
+        if only in SECTION_VALUE_TAGS and (tag is None or only == tag):
+            tag = only
+            value = value[only]
 
     if tag == "file":
         if isinstance(value, dict):
             inner = value.get("file") if isinstance(value.get("file"), dict) else value
             if inner.get("fileName") and inner.get("documentId"):
-                return {"file": inner}
+                return {
+                    "file": {
+                        "fileName": _text_value(inner.get("fileName")),
+                        "documentId": _text_value(inner.get("documentId")),
+                        "decryptedSize": _as_int(
+                            inner.get("decryptedSize", inner.get("unencryptedSize"))
+                        )
+                        or 0,
+                    }
+                }
         return {"string": _section_text(value)}
 
     if tag == "email":
@@ -186,42 +398,51 @@ def _normalize_section_value(kind: object, value: object) -> object:
             provider = None
         return {
             "email": {
-                "email_address": str(address),
-                "provider": None if provider is None else str(provider),
+                "email_address": _text_value(address),
+                "provider": None if provider is None else _text_value(provider),
             }
         }
 
     if tag in ("date", "monthYear"):
         if value is None:
             return {tag: None}
-        parsed = _as_int(value)
-        return {tag: parsed}
+        return {tag: _as_int(value)}
 
     if tag == "address":
-        if isinstance(value, dict):
-            return {"address": value}
+        address = _normalize_address(value)
+        if address is not None:
+            return {"address": address}
         return {"string": _section_text(value)}
 
     if tag == "sshKey":
-        if isinstance(value, dict):
-            return {"sshKey": value}
+        ssh_key = _normalize_ssh_key(value)
+        if ssh_key is not None:
+            return {"sshKey": ssh_key}
         return {"string": _section_text(value)}
 
     if tag == "ssoLogin":
-        if isinstance(value, dict):
-            return {"ssoLogin": value}
+        sso_login = _normalize_sso_login(value)
+        if sso_login is not None:
+            return {"ssoLogin": sso_login}
         return {"string": _section_text(value)}
 
     if tag in SECTION_STRING_TAGS:
         return {tag: _value_to_text(value)}
 
-    if tag in ("reference", "formattedText", "managedApplication"):
-        if isinstance(value, dict):
-            return {tag: value}
-        return {"string": _section_text(value)}
+    if tag == "formattedText":
+        return {"formattedText": _normalize_formatted_text(value)}
+
+    if tag == "managedApplication":
+        return {"managedApplication": _normalize_managed_application(value)}
+
+    if tag == "reference":
+        # The importer's ``reference`` variant is a newtype around ArcStr,
+        # not an object.
+        return {"reference": _section_text(value)}
 
     if tag == "unsupported":
-        return {"string": _section_text(value)}
+        # Unit variant: it carries no payload.
+        return {"unsupported": None}
 
     if isinstance(value, dict):
         present = [key for key in value if key in SECTION_VALUE_TAGS]
@@ -264,10 +485,24 @@ def _enum_text(value: object, allowed: dict[str, str]) -> str | None:
     return allowed.get(str(value).strip().lower())
 
 
+INPUT_TRAIT_DEFAULTS = {
+    "keyboard": "default",
+    "correction": "default",
+    "capitalization": "default",
+}
+
+
 def _convert_input_traits(traits: object) -> dict:
+    """Return the full DetailSectionFieldInputTraits object.
+
+    The importer's InputTraits struct has three non-Option fields, so a
+    partial object fails with ``missing field``.  The official exporter always
+    writes all three; values that are absent locally use the ``default`` enum
+    variant.
+    """
+    result = dict(INPUT_TRAIT_DEFAULTS)
     if not isinstance(traits, dict):
-        return {}
-    result = {}
+        return result
     if "keyboard" in traits:
         value = _enum_text(traits["keyboard"], INPUT_KEYBOARDS)
         if value:
@@ -316,18 +551,23 @@ def _convert_section_field(
     if value is not None:
         value = _normalize_section_value(kind, value)
 
-    result: dict[str, Any] = {"title": str(title or ""), "id": str(field_id or "")}
-    if value is not None:
-        result["value"] = value
-
     attributes = field.get("a")
     if not isinstance(attributes, dict):
         attributes = {}
-    for key in ("guarded", "multiline", "dontGenerate"):
-        if key in field:
-            result[key] = _as_bool(field[key])
-        elif key in attributes:
-            result[key] = _as_bool(attributes[key])
+    result: dict[str, Any] = {"title": str(title or ""), "id": str(field_id or "")}
+    # The official exporter always writes ``value`` and the three boolean
+    # flags.  The importer treats them as defaulted/Option fields, but matching
+    # the official shape keeps the output byte-for-byte comparable.
+    result["value"] = (
+        _normalize_section_value(kind, None) if value is None else value
+    )
+    result["guarded"] = _as_bool(field.get("guarded", attributes.get("guarded", False)))
+    result["multiline"] = _as_bool(
+        field.get("multiline", attributes.get("multiline", False))
+    )
+    result["dontGenerate"] = _as_bool(
+        field.get("dontGenerate", attributes.get("dontGenerate", False))
+    )
     if "indexAtSource" in field:
         parsed = _as_int(field["indexAtSource"])
         if parsed is not None:
@@ -345,9 +585,7 @@ def _convert_section_field(
     input_traits = field.get("inputTraits")
     if input_traits is None:
         input_traits = attributes.get("inputTraits")
-    converted_traits = _convert_input_traits(input_traits)
-    if converted_traits:
-        result["inputTraits"] = converted_traits
+    result["inputTraits"] = _convert_input_traits(input_traits)
     return result
 
 
@@ -356,9 +594,7 @@ def _convert_section(
 ) -> dict | None:
     if not isinstance(section, dict):
         return None
-    result: dict[str, Any] = {}
-    if "title" in section:
-        result["title"] = str(section["title"])
+    result: dict[str, Any] = {"title": str(section.get("title", "") or "")}
     if "name" in section:
         result["name"] = str(section["name"])
     fields = section.get("fields")
@@ -456,8 +692,8 @@ def _convert_document_attributes(
         "documentId": str(document_id),
     }
     parsed_size = _as_int(size)
-    if parsed_size is not None:
-        result["decryptedSize"] = parsed_size
+    # DocumentAttributes.decryptedSize is a required u64 in the importer.
+    result["decryptedSize"] = 0 if parsed_size is None else parsed_size
     return result
 
 
@@ -482,24 +718,24 @@ def _normalize_details(
     login_fields = _convert_login_fields(
         details.get("loginFields") or details.get("fields")
     )
-    if login_fields:
-        result["loginFields"] = login_fields
+    result["loginFields"] = login_fields
 
     notes = details.get("notesPlain")
     if isinstance(notes, str) and notes:
         result["notesPlain"] = notes
 
     sections = details.get("sections")
+    converted_sections: list[dict] = []
     if isinstance(sections, list):
         converted_sections = [
             s for s in (_convert_section(item, file_info) for item in sections) if s
         ]
-        if converted_sections:
-            result["sections"] = converted_sections
+    # The official exporter always writes these three arrays, possibly empty.
+    result["sections"] = converted_sections
 
-    history = _convert_password_history(details.get("passwordHistory"))
-    if history:
-        result["passwordHistory"] = history
+    result["passwordHistory"] = _convert_password_history(
+        details.get("passwordHistory")
+    )
 
     password = details.get("password")
     if isinstance(password, str) and password:
@@ -511,10 +747,21 @@ def _normalize_details(
     if document_attributes:
         result["documentAttributes"] = document_attributes
 
-    passkey = details.get("passkey")
-    if profile == PROFILE_IMPORTER and isinstance(passkey, dict):
-        result["passkey"] = copy.deepcopy(passkey)
+    if profile == PROFILE_IMPORTER:
+        passkey = details.get("passkey")
+        if isinstance(passkey, dict):
+            result["passkey"] = copy.deepcopy(passkey)
     return result
+
+
+URL_MODES = {
+    "default": "default",
+    "anywhereonwebsite": "default",
+    "anywhere": "default",
+    "host": "host",
+    "exact": "host",
+    "never": "never",
+}
 
 
 def _convert_url(url: object) -> dict | None:
@@ -524,12 +771,34 @@ def _convert_url(url: object) -> dict | None:
     if not target:
         return None
     result = {"label": str(url.get("label", url.get("l", "")) or ""), "url": str(target)}
-    # B5/local JSON uses either the long or the short spelling; the exporter
-    # writes the canonical ``mode`` key.
+    # B5/local JSON uses either the long or the short spelling; the official
+    # exporter writes the canonical ``mode`` key with the lowercase
+    # ItemUrlMode spelling (default/host/never).
     mode = url.get("mode", url.get("m"))
-    if mode:
-        result["mode"] = str(mode)
+    result["mode"] = URL_MODES.get(str(mode).strip().lower(), "default") if mode else "default"
     return result
+
+
+def _normalize_location(value: object) -> dict | None:
+    """Normalize op_model_item::ItemLocation.
+
+    The enum has exactly one externally tagged variant, ``Gps``, whose value
+    is ``{"id": <uuid>, "location": <optional coordinate>}``.
+    """
+    if not isinstance(value, dict):
+        return None
+    gps = value.get("Gps") if isinstance(value.get("Gps"), dict) else value
+    if "id" not in gps and "location" not in gps:
+        return None
+    location = gps.get("location")
+    if location is not None and not isinstance(location, dict):
+        location = None
+    return {
+        "Gps": {
+            "id": _text_value(gps.get("id")),
+            "location": location,
+        }
+    }
 
 
 def _normalize_overview(
@@ -543,9 +812,18 @@ def _normalize_overview(
         return copy.deepcopy(source)
     result: dict[str, Any] = {"title": str(source.get("title", "") or "")}
 
-    url = source.get("url")
-    if url:
-        result["url"] = str(url)
+    # The official exporter always writes these scalar fields.  ``subtitle``
+    # and ``url`` are non-Option Strings in the importer model, so omission
+    # fails with "missing field"; empty strings are the neutral value.
+    result["url"] = str(source.get("url", "") or "")
+    result["subtitle"] = str(source.get("subtitle") or source.get("ainfo") or "")
+    if source.get("pgrng") is not None:
+        result["pgrng"] = _as_bool(source["pgrng"])
+    # ``icons`` and ``watchtowerExclusions`` are Option values; the official
+    # exporter writes null when there is nothing to record.
+    result["icons"] = None
+    result["watchtowerExclusions"] = None
+
     urls = source.get("urls")
     if isinstance(urls, list):
         converted_urls = [u for u in (_convert_url(item) for item in urls) if u]
@@ -572,17 +850,14 @@ def _normalize_overview(
         # rejects them as invalid JSON.  Omit non-finite values.
         if parsed_pbe is not None and math.isfinite(parsed_pbe):
             result["pbe"] = parsed_pbe
-    if source.get("pgrng") is not None:
-        result["pgrng"] = _as_bool(source["pgrng"])
 
-    subtitle = source.get("subtitle") or source.get("ainfo") or ""
+    subtitle = result["subtitle"]
     if not subtitle and category_uuid in ("001", "005"):
         for field in details.get("loginFields", []):
             if field.get("designation") == "username":
                 subtitle = field.get("value") or ""
                 break
-    if subtitle:
-        result["subtitle"] = str(subtitle)
+    result["subtitle"] = str(subtitle)
 
     # ``appIds`` exists only in the local B5 overview and is not accepted by
     # the v3 importer's ItemOverview field visitor.  ``passkey``/``passkeyId``
@@ -592,11 +867,14 @@ def _normalize_overview(
             continue
         if key in ("passkey", "passkeyId") and profile != PROFILE_IMPORTER:
             continue
-        result[key] = source[key]
+        canonical_key = "b5UserUuid" if key == "b5UserUUID" else key
+        result[canonical_key] = source[key]
 
     locations = source.get("locations")
     if isinstance(locations, list):
-        cleaned_locations = [item for item in locations if isinstance(item, dict)]
+        cleaned_locations = [
+            item for item in (_normalize_location(value) for value in locations) if item
+        ]
         if cleaned_locations:
             result["locations"] = cleaned_locations
 
@@ -705,7 +983,7 @@ def _normalize_item(
     else:
         overview = _normalize_overview(item.overview or {}, details, category_uuid, profile)
     result = {
-        "uuid": item.uuid,
+        "uuid": str(item.uuid),
         "favIndex": 1 if data.get("is_favorite") else 0,
         "createdAt": _as_int(data.get("created_at")) or 0,
         "updatedAt": _as_int(data.get("updated_at")) or 0,
@@ -759,15 +1037,19 @@ def _normalize_account(account: Account, profile: str = PROFILE_OFFICIAL) -> dic
         # the importer.  The blob is not part of the local export cache.
         avatar = ""
     return {
-        "accountName": data.get("team_name")
-        or full_name
-        or data.get("user_name")
-        or fallback,
-        "name": full_name or data.get("user_name") or data.get("team_name") or fallback,
-        "avatar": avatar,
-        "email": data.get("user_email") or "",
-        "uuid": account.uuid,
-        "domain": data.get("sign_in_url") or "",
+        "accountName": str(
+            data.get("team_name")
+            or full_name
+            or data.get("user_name")
+            or fallback
+        ),
+        "name": str(
+            full_name or data.get("user_name") or data.get("team_name") or fallback
+        ),
+        "avatar": str(avatar or ""),
+        "email": str(data.get("user_email") or ""),
+        "uuid": str(account.uuid),
+        "domain": str(data.get("sign_in_url") or ""),
     }
 
 

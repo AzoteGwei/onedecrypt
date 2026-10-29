@@ -24,8 +24,9 @@ not from product documentation alone.
 
 In the current reverse-engineering matrix `official` and `exporter` have the
 same canonical field set. The names are kept separate because the two code
-paths are separate: the exporter never emits `passkey`, while the importer's
-`ItemDetails` model has a `passkey` field.
+paths are separate: the exporter never emits passkeys, while the importer
+accepts `details.passkey` and the `ItemOverview` `passkey`/`passkeyId` slots
+(and discards the payload via `force_none`).
 
 `importer` is intentionally a superset of `official`. It includes aliases that
 the shipped serde visitors accept but the exporter does not emit, for example:
@@ -165,9 +166,11 @@ other local-only keys preserved by `full`.
 
 ### Passkeys
 
-The official 1PUX exporter does not emit passkeys. The importer's
-`ItemDetails` model does have a `passkey` field. `official`/`exporter` omit it;
-`importer`/`full` preserve it as an opaque JSON value.
+The official 1PUX exporter does not emit passkeys. The importer accepts
+`details.passkey` and the `ItemOverview` `passkey`/`passkeyId` slots; the
+payloads are deserialized with `force_none` and discarded.
+`official`/`exporter` omit them; `importer`/`full` may preserve the local
+metadata as opaque JSON values.
 
 ## Validating an export
 

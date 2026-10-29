@@ -203,9 +203,10 @@ strings:
 - The item field dispatcher contains `uuid`, `favIndex`, `categoryUuid`,
   `state`, `overview`, `details`, `createdAt`, `updatedAt`.  `InnerVaultItem`
   has exactly eight fields.
-- The v3 `ItemDetails` field dispatcher has `htmlForm`, `loginFields`,
-  `notesPlain`, `sections`, `passwordHistory`, `password`, `passkey`, and
-  `documentAttributes`.
+- The v2 `ItemDetails` field dispatcher (reused by v3) has `htmlForm`,
+  `loginFields`, `notesPlain`, `sections`, `passwordHistory`, `password`,
+  `sshKey` (force_none), and `documentAttributes`. It has no `passkey`
+  field.
 - The v3 `ItemOverview` importer dispatcher has 20 accepted strings,
   including `subtitle`/`ainfo`, `icons`, `shortcut`, `locations`,
   `b5UserUUID`/`b5UserUuid`, `watchtowerExclusions`,
@@ -240,8 +241,9 @@ capability sets:
 | `full` | all locally available metadata, including fields only present in the local database |
 
 The current matrix has the same field sets for `official` and `exporter`.
-`importer` adds the importer-only `passkey` field, which the exporter path
-does not emit, plus legacy aliases accepted by the serde visitors.  The names
+`importer` adds the importer-only overview `passkey`/`passkeyId` slots,
+which the exporter path does not emit, plus legacy aliases accepted by the
+serde visitors.  The names
 remain separate so a future correction to either code path cannot silently
 change the meaning of a profile.  `full` additionally keeps `trashed`,
 `changerUuid`, `scope`, `stateRaw`, `validated`, raw short-key section fields,
@@ -284,7 +286,8 @@ Import flow:
    and `overview` are copied.
 3. Deserialize `ItemDetails` into the internal details model.  The canonical
    fields are `htmlForm`, `loginFields`, `notesPlain`, `sections`,
-   `passwordHistory`, `password`, `passkey`, and `documentAttributes`.
+   `passwordHistory`, `password`, `passkey` (force_none), and
+   `documentAttributes`.
 4. Deserialize `ItemOverview` into the internal overview model.  The visitor
    accepts `ainfo`, `subtitle`, `b5UserUUID`/`b5UserUuid`, `icons`,
    `URLs`/`urls`, `tags`, `title`, `url`, `ps`, `pbe`, `pgrng`,
@@ -304,11 +307,11 @@ Import flow:
    creation, keyset encryption, and sync are handled by the surrounding app
    layer, not by the 1PUX translation code.
 
-The schema-level importer contains a `passkey` field, and the `importer`
-profile therefore includes it when present.  The exporter path does not emit
-passkeys, so `official` and `exporter` omit them; `full` keeps all passkey
-metadata.  The official export UI's "all your data, except your passkeys"
-message is consistent with the exporter-side behavior.
+The schema-level importer accepts `details.passkey` and the
+`ItemOverview` `passkey`/`passkeyId` slots; the payloads are deserialized with
+`force_none` and discarded.  The exporter path does not emit passkeys, so
+`official` and `exporter` omit them; `importer` and `full` keep the local
+metadata.
 
 ## Verification
 

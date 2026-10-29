@@ -3,7 +3,7 @@
   "$id": "https://onedecrypt.invalid/schema/1pux-full.schema.json",
   "title": "1PUX v3 export.data (full profile)",
   "description": "JSON Schema for the ``export.data`` entry of a 1PUX ZIP archive. All metadata available in the local B5 database, including raw details/overview objects, trashed/changerUuid/scope/stateRaw/validated, the complete document encryption metadata, passkeys and appIds. This is a backup profile and is not guaranteed to import into the official app. See docs/schema/README.md for the ZIP layout and the companion ``export.attributes`` schema.",
-  "$comment": "Recovered from the shipped 1Password desktop core (op_import_export::models::translation::onepux::v2/v3). Primary importer visitors: 0x4740aa0 (ItemDetails), 0x4740d10 (ItemOverview), 0x4740760 (DetailSection), 0x47414a0 (DetailSectionField), 0x4740830 (DocumentAttributes), 0x47412e0 (LoginField), 0x4740370 (OverviewUrl), 0x4740fd0 (SectionFieldValue). Primary exporter path: 0x4c4fb70 (onepux::export closure) and 0x6173620 (ItemDetails::from). File entries use ``files/<documentId>__<fileName>`` (two underscores); the format string is at 0x11f79ac, its call site is 0x4c52c4a, and the importer lookup is 0x4535aae.",
+  "$comment": "Recovered from the shipped 1Password desktop core (op_import_export::models::translation::onepux::v2/v3). Primary importer visitors (nm addresses): 0x4740aa0 (ItemDetails), 0x4740d10 (ItemOverview), 0x4740760 (DetailSection), 0x47414a0 (DetailSectionField), 0x4740830 (DocumentAttributes), 0x47412e0 (LoginField), 0x4740370 (OverviewUrl), 0x4740fd0 (SectionFieldValue), 0x492fc80 (InputTraits). Required-field evidence: ItemOverview.subtitle missing-field call at 0x4587208; DetailSectionField title/value/id/guarded at 0x43e01xx; DocumentAttributes fileName/decryptedSize at 0x4324f87/0x432505d; InputTraits keyboard/correction/capitalization via 0x492fc80. Main exporter path: 0x4c4fb70 (onepux::export closure) and 0x6173620 (ItemDetails::from). File entries use ``files/<documentId>__<fileName>`` (two underscores); the format string is at 0x11f79ac, its call site is 0x4c52c4a, and the importer lookup is 0x4535aae.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -245,7 +245,7 @@
     },
     "ItemDetails": {
       "type": "object",
-      "description": "Item details (``items[].details``). Every field is optional; a Document item typically has only documentAttributes, and a Password item typically has only password.",
+      "description": "Item details (``items[].details``). The official exporter always writes loginFields, sections and passwordHistory, possibly empty.",
       "properties": {
         "loginFields": {
           "type": "array",
@@ -288,7 +288,7 @@
         }
       },
       "additionalProperties": true,
-      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes."
+      "$comment": "ItemDetails is the v2 struct reused by v3. The importer field visitor accepts htmlForm, loginFields, notesPlain, sections, passwordHistory, password, passkey and documentAttributes. The importer deserializes passkey through force_none."
     },
     "ItemOverview": {
       "type": "object",
@@ -353,26 +353,14 @@
         },
         "locations": {
           "type": "array",
-          "description": "Locations associated with the item.",
+          "description": "Saved locations associated with the item.",
           "items": {
-            "description": "Location object.",
-            "type": [
-              "object",
-              "array",
-              "string",
-              "number",
-              "boolean",
-              "null"
-            ]
+            "$ref": "#/$defs/ItemLocation"
           }
         },
         "b5UserUuid": {
           "type": "string",
           "description": "B5 user UUID. The official importer accepts both this spelling and ``b5UserUUID``."
-        },
-        "b5UserUUID": {
-          "type": "string",
-          "description": "Alias spelling of ``b5UserUuid`` accepted by the official importer."
         },
         "watchtowerExclusions": {
           "description": "Watchtower exclusions. The exporter writes null when there are none, otherwise an object of boolean exclusion flags.",
@@ -388,6 +376,11 @@
         "migrationDestination": {
           "$ref": "#/$defs/MigrationDestination",
           "description": "Migration destination emitted by the official exporter."
+        },
+        "b5UserUUID": {
+          "type": "string",
+          "description": "Alias spelling of ``b5UserUuid`` accepted by the official importer.",
+          "$comment": "Legacy/importer alias: ``b5UserUUID`` is accepted as the same field."
         },
         "passkey": {
           "$ref": "#/$defs/Passkey"
@@ -421,7 +414,7 @@
         }
       },
       "additionalProperties": true,
-      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. appIds is local-only."
+      "$comment": "ItemOverview importer field list: ainfo, subtitle, b5UserUUID, b5UserUuid, icons, URLs, urls, tags, title, url, ps, pbe, pgrng, passkeyId, passkey, MigrationDestination, migrationDestination, watchtowerExclusions, shortcut, locations. subtitle and url are non-Option Strings; appIds is local-only."
     },
     "ItemShortcut": {
       "type": "object",
@@ -595,7 +588,7 @@
         }
       },
       "additionalProperties": true,
-      "$comment": "DetailSection importer fields: title, name, fields, hideAddAnotherField."
+      "$comment": "DetailSection importer fields: title, name, fields, hideAddAnotherField. title is required by the importer."
     },
     "DetailSectionField": {
       "type": "object",
@@ -642,7 +635,7 @@
         }
       },
       "additionalProperties": true,
-      "$comment": "DetailSectionField importer fields: title, id, value, indexAtSource, guarded, multiline, clipboardFilter, dontGenerate, inputTraits, placeholder. keyboard/correction live inside inputTraits, not at the field level."
+      "$comment": "DetailSectionField importer fields: title, id, value, indexAtSource, guarded, multiline, clipboardFilter, dontGenerate, inputTraits, placeholder. keyboard/correction live inside inputTraits, not at the field level. The official exporter writes value/guarded/multiline/dontGenerate/inputTraits for every field."
     },
     "SectionFieldValue": {
       "description": "Raw local section-field value. The full profile preserves the database representation, so it may be a tagged enum object, a scalar, or a vendor-specific object.",
@@ -657,22 +650,43 @@
     },
     "InputTraits": {
       "type": "object",
-      "description": "Keyboard/autocorrection hints for a section field (``details.sections[].fields[].inputTraits``). Values are template strings, not booleans; the importer accepts free-form strings.",
+      "description": "Keyboard/autocorrection hints for a section field (``details.sections[].fields[].inputTraits``). The importer's DetailSectionFieldInputTraits struct has three non-Option enum fields; the official exporter always writes all three.",
       "properties": {
         "keyboard": {
           "type": "string",
-          "description": "Keyboard type hint, e.g. default or numberPad."
+          "description": "Keyboard type hint.",
+          "enum": [
+            "default",
+            "numberPad",
+            "namePhonePad",
+            "numbersAndPunctuation",
+            "emailAddress",
+            "uRL"
+          ]
         },
         "correction": {
           "type": "string",
-          "description": "Autocorrection hint, e.g. default or no."
+          "description": "Autocorrection hint.",
+          "enum": [
+            "default",
+            "yes",
+            "no"
+          ]
         },
         "capitalization": {
           "type": "string",
-          "description": "Autocapitalization hint, e.g. default or sentences."
+          "description": "Autocapitalization hint.",
+          "enum": [
+            "default",
+            "none",
+            "words",
+            "sentences",
+            "allCharacters"
+          ]
         }
       },
-      "additionalProperties": true
+      "additionalProperties": true,
+      "$comment": "DetailSectionFieldInputTraits (0x492fc80) requires keyboard, correction and capitalization; absent values default to 'default'."
     },
     "DocumentAttributes": {
       "type": "object",
@@ -684,7 +698,7 @@
         },
         "documentId": {
           "type": "string",
-          "description": "Document identifier. Together with fileName it forms the ZIP entry name."
+          "description": "Document identifier. Together with fileName it forms the ZIP entry name. The importer models this as Option<Uuid>."
         },
         "decryptedSize": {
           "type": "integer",
@@ -737,7 +751,7 @@
         }
       },
       "additionalProperties": true,
-      "$comment": "DocumentAttributes deserializer fields: fileName, documentId, signingKey, decryptedSize/unencryptedSize, encryptedSize, integrityHash, encryptionKey, nonce, uti."
+      "$comment": "DocumentAttributes serializer (0x4723be0) always writes fileName and decryptedSize; documentId is Option<Uuid>. The deserializer also accepts signingKey, decryptedSize/unencryptedSize, encryptedSize, integrityHash, encryptionKey, nonce and uti."
     },
     "DetailHtmlForm": {
       "type": "object",
@@ -801,10 +815,10 @@
         },
         "mode": {
           "type": "string",
-          "description": "1Password URL matching mode, for example anywhereOnWebsite or exact.",
-          "examples": [
-            "anywhereOnWebsite",
-            "exact",
+          "description": "1Password URL matching mode. The exporter's ``From<ItemUrl>`` conversion writes the lowercase ItemUrlMode spelling.",
+          "enum": [
+            "default",
+            "host",
             "never"
           ]
         },
@@ -825,6 +839,17 @@
         }
       },
       "additionalProperties": true
+    },
+    "ItemLocation": {
+      "description": "Raw local ItemLocation value preserved by the full backup profile.",
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
     },
     "Passkey": {
       "description": "Opaque passkey payload. The official 1PUX exporter does not emit passkeys; the importer model has a passkey field, so the importer and full profiles preserve the local value verbatim.",

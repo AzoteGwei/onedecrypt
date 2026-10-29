@@ -45,7 +45,7 @@ uv run pytest
 | Profile | Meaning |
 |---|---|
 | `official` (default) | Fields supported by both the official exporter and importer |
-| `importer` | Maximum field set consumed by the official importer (includes passkeys) |
+| `importer` | Maximum field set consumed by the official importer (includes details/overview passkey slots) |
 | `exporter` | Field set emitted by the official exporter |
 | `full` | All locally available metadata; a backup profile, not guaranteed importable |
 
@@ -104,8 +104,10 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
 - The 1PUX exporter follows the official v3 schema recovered from the
   desktop core: exactly eight item fields, the canonical item details/overview
   key sets, long-form section fields, and `export.attributes.timestamp`.
-  `importer` keeps passkeys because the importer model supports the `passkey`
-  field; `official` and `exporter` omit them to match the exporter path.
+  `importer` keeps the `details.passkey` field and the overview
+  `passkey`/`passkeyId` slots because the importer accepts them; the payload is
+  discarded via `force_none`. `official`/`exporter` omit them to match the
+  exporter path.
   Custom icon files are not exported.  File entries use
   `files/<documentId>__<fileName>` (two underscores), matching the actual
   exporter/importer format string.

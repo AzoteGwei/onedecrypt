@@ -112,8 +112,14 @@ def test_short_section_fields_are_converted():
         "title": "PIN",
         "id": "pin1",
         "value": {"concealed": "1234"},
+        "guarded": False,
         "multiline": False,
-        "inputTraits": {"correction": "no", "capitalization": "none"},
+        "dontGenerate": False,
+        "inputTraits": {
+            "keyboard": "default",
+            "correction": "no",
+            "capitalization": "none",
+        },
     }
     assert details["htmlForm"] == {
         "htmlMethod": "POST",
@@ -123,10 +129,13 @@ def test_short_section_fields_are_converted():
     }
     overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
     assert overview["subtitle"] == "user@example.com"
+    assert overview["url"] == "https://example.com"
+    assert "pgrng" not in overview
+    assert overview["icons"] is None
+    assert overview["watchtowerExclusions"] is None
     assert overview["urls"] == [
-        {"label": "", "url": "https://example.com", "mode": "anywhereOnWebsite"}
+        {"label": "", "url": "https://example.com", "mode": "default"}
     ]
-    assert "icons" not in overview
     assert "ainfo" not in overview
 
 
@@ -157,14 +166,20 @@ def test_passkeys_follow_profile_capabilities():
             "userHandle": "dXNlcg",
         },
     }
+    item.overview = {"title": "Example", "passkey": {"type": "webauthn"}}
+    # ItemDetails accepts passkey through force_none; only the importer and
+    # full profiles keep the local payload.  ItemOverview also accepts
+    # passkey/passkeyId, but force_none discards the payload.
     for profile in (PROFILE_OFFICIAL, PROFILE_EXPORTER):
         data, _ = build_export_data(account, profile=profile)
-        details = data["accounts"][0]["vaults"][0]["items"][0]["details"]
-        assert "passkey" not in details
+        item_data = data["accounts"][0]["vaults"][0]["items"][0]
+        assert "passkey" not in item_data["details"]
+        assert "passkey" not in item_data["overview"]
     for profile in (PROFILE_IMPORTER, PROFILE_FULL):
         data, _ = build_export_data(account, profile=profile)
-        details = data["accounts"][0]["vaults"][0]["items"][0]["details"]
-        assert details["passkey"]["type"] == "webauthn"
+        item_data = data["accounts"][0]["vaults"][0]["items"][0]
+        assert item_data["details"]["passkey"]["type"] == "webauthn"
+        assert item_data["overview"]["passkey"]["type"] == "webauthn"
 
 
 def test_full_profile_keeps_extra_metadata():
@@ -331,7 +346,18 @@ def test_overview_types_are_checked():
     from onedecrypt.pux_schema import _validate_overview
 
     with pytest.raises(SchemaError, match="ps"):
-        _validate_overview({"title": "Example", "ps": 100.5}, "overview", allow_passkey=False)
+        _validate_overview(
+            {
+                "title": "Example",
+                "subtitle": "",
+                "url": "",
+                "icons": None,
+                "watchtowerExclusions": None,
+                "ps": 100.5,
+            },
+            "overview",
+            allow_passkey=False,
+        )
 
 
 def test_no_files_suppresses_document_warnings():
@@ -391,3 +417,274 @@ def test_date_and_month_year_values_are_typed_integers():
     fields = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0]["fields"]
     assert fields[0]["value"] == {"date": 20240131}
     assert fields[1]["value"] == {"monthYear": 202401}
+
+
+def test_input_traits_always_include_all_three_fields():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "name": "s",
+                "fields": [
+                    {"title": "Empty", "id": "a"},
+                    {"title": "One", "id": "b", "inputTraits": {"correction": "no"}},
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account)
+    fields = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0][
+        "fields"
+    ]
+    assert fields[0]["inputTraits"] == {
+        "keyboard": "default",
+        "correction": "default",
+        "capitalization": "default",
+    }
+    assert fields[1]["inputTraits"] == {
+        "keyboard": "default",
+        "correction": "no",
+        "capitalization": "default",
+    }
+
+
+def test_section_values_match_official_payload_shapes():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "name": "s",
+                "fields": [
+                    {
+                        "title": "Address",
+                        "id": "a",
+                        "k": "address",
+                        "v": {
+                            "streetAddress": "1 Main",
+                            "city": "Springfield",
+                            "territory": "CA",
+                            "postalCode": "12345",
+                            "country": "US",
+                        },
+                    },
+                    {
+                        "title": "SSH",
+                        "id": "k",
+                        "k": "sshKey",
+                        "v": {
+                            "privateKey": "priv",
+                            "metadata": {
+                                "publicKey": "pub",
+                                "fingerprint": "fp",
+                                "keyType": "rsa2048",
+                            },
+                        },
+                    },
+                    {
+                        "title": "SSO",
+                        "id": "s",
+                        "k": "ssoLogin",
+                        "v": {
+                            "provider": "okta",
+                            "item": {"itemUuid": "i", "vaultUuid": "v"},
+                        },
+                    },
+                    {
+                        "title": "Reference",
+                        "id": "r",
+                        "k": "reference",
+                        "v": {"itemUuid": "i"},
+                    },
+                    {
+                        "title": "Formatted",
+                        "id": "f",
+                        "k": "formattedText",
+                        "v": {
+                            "content": "hi",
+                            "content_type": "text",
+                            "content_format": "plaintext",
+                            "format_version": 1,
+                            "plain_text_display_value": "hi",
+                            "html_display_value": "<p>hi</p>",
+                        },
+                    },
+                    {
+                        "title": "Managed",
+                        "id": "m",
+                        "k": "managedApplication",
+                        "v": {
+                            "applicationUuid": "app",
+                            "loginInitiationUrl": "https://example.com",
+                        },
+                    },
+                    {"title": "Unsupported", "id": "u", "k": "unsupported", "v": "x"},
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account)
+    fields = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0][
+        "fields"
+    ]
+    by_id = {field["id"]: field for field in fields}
+
+    assert by_id["a"]["value"] == {
+        "address": {
+            "street": "1 Main",
+            "city": "Springfield",
+            "country": "US",
+            "zip": "12345",
+            "state": "CA",
+        }
+    }
+    assert by_id["k"]["value"] == {
+        "sshKey": {
+            "privateKey": "priv",
+            "metadata": {
+                "privateKey": "priv",
+                "publicKey": "pub",
+                "fingerprint": "fp",
+                "keyType": {"rsa": "Rsa2048"},
+            },
+        }
+    }
+    assert by_id["s"]["value"] == {
+        "ssoLogin": {
+            "provider": "okta",
+            "item": {"itemUuid": "i", "vaultUuid": "v"},
+        }
+    }
+    assert by_id["r"]["value"] == {"reference": '{"itemUuid": "i"}'}
+    assert by_id["f"]["value"]["formattedText"] == {
+        "content": "hi",
+        "content_type": "Text",
+        "content_format": "PlainText",
+        "format_version": 1,
+        "plain_text_display_value": "hi",
+        "html_display_value": "<p>hi</p>",
+    }
+    assert by_id["m"]["value"] == {
+        "managedApplication": {
+            "applicationUuid": "app",
+            "loginInitiationUrl": "https://example.com",
+        }
+    }
+    assert by_id["u"]["value"] == {"unsupported": None}
+    assert by_id["u"]["guarded"] is False
+    assert by_id["u"]["multiline"] is False
+    assert by_id["u"]["dontGenerate"] is False
+
+
+def test_validator_rejects_partial_input_traits():
+    import pytest
+
+    from onedecrypt.pux_schema import _validate_input_traits
+
+    with pytest.raises(SchemaError, match="missing field"):
+        _validate_input_traits({"keyboard": "default"}, "traits")
+    with pytest.raises(SchemaError, match="invalid enum value"):
+        _validate_input_traits(
+            {
+                "keyboard": "bogus",
+                "correction": "default",
+                "capitalization": "default",
+            },
+            "traits",
+        )
+
+
+def test_minimal_item_matches_official_overview_and_details_invariants():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {"sections": [{"title": "", "fields": [{"title": "F", "id": "f"}]}]}
+    item.overview = {"title": "T"}
+    data, _ = build_export_data(account)
+    exported = data["accounts"][0]["vaults"][0]["items"][0]
+    assert set(exported["overview"]) == {
+        "title",
+        "url",
+        "subtitle",
+        "icons",
+        "watchtowerExclusions",
+    }
+    assert exported["overview"]["url"] == ""
+    assert exported["overview"]["subtitle"] == ""
+    assert exported["overview"]["icons"] is None
+    assert exported["overview"]["watchtowerExclusions"] is None
+    assert set(exported["details"]) == {
+        "loginFields",
+        "sections",
+        "passwordHistory",
+    }
+    assert exported["details"]["loginFields"] == []
+    assert exported["details"]["passwordHistory"] == []
+    section = exported["details"]["sections"][0]
+    assert section["title"] == ""
+    assert "name" not in section
+    field = section["fields"][0]
+    assert set(field) == {
+        "title",
+        "id",
+        "value",
+        "guarded",
+        "multiline",
+        "dontGenerate",
+        "inputTraits",
+    }
+    assert set(field["inputTraits"]) == {
+        "keyboard",
+        "correction",
+        "capitalization",
+    }
+
+
+def test_placeholder_is_preserved_on_section_fields():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "fields": [
+                    {
+                        "title": "F",
+                        "id": "f",
+                        "value": "v",
+                        "placeholder": "hint",
+                    }
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account)
+    field = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0][
+        "fields"
+    ][0]
+    assert field["placeholder"] == "hint"
+
+
+def test_locations_are_wrapped_in_the_gps_variant():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.overview = {
+        "title": "T",
+        "locations": [
+            {"id": "loc", "location": None},
+            {"Gps": {"id": "loc2", "location": None}},
+        ],
+    }
+    data, _ = build_export_data(account)
+    overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
+    assert overview["locations"] == [
+        {"Gps": {"id": "loc", "location": None}},
+        {"Gps": {"id": "loc2", "location": None}},
+    ]

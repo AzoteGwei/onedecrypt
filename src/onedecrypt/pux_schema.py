@@ -56,11 +56,13 @@ OVERVIEW_KEYS = {
     "title",
     "url",
     "urls",
+    "URLs",
     "tags",
     "ps",
     "pbe",
     "pgrng",
     "subtitle",
+    "ainfo",
     "icons",
     "passkey",
     "passkeyId",
@@ -70,6 +72,7 @@ OVERVIEW_KEYS = {
     "b5UserUuid",
     "watchtowerExclusions",
     "migrationDestination",
+    "MigrationDestination",
 }
 
 SECTION_KEYS = {"title", "name", "fields", "hideAddAnotherField"}
@@ -99,8 +102,8 @@ FULL_DOCUMENT_KEYS = {
     "encryptionKey",
     "uti",
 }
-URL_KEYS = {"label", "url", "mode"}
-LOGIN_FIELD_KEYS = {"value", "id", "name", "fieldType", "designation"}
+URL_KEYS = {"label", "url", "mode", "l", "u", "m"}
+LOGIN_FIELD_KEYS = {"value", "id", "name", "fieldType", "type", "designation"}
 HTML_FORM_KEYS = {"htmlMethod", "htmlAction", "htmlId", "htmlID", "htmlName"}
 HISTORY_KEYS = {"value", "time"}
 SHORTCUT_KEYS = {"value", "case_sensitive"}
@@ -153,8 +156,39 @@ SECTION_STRING_TAGS = {
     "totp",
     "url",
 }
+INPUT_KEYBOARD_VALUES = {
+    "default",
+    "numberPad",
+    "namePhonePad",
+    "numbersAndPunctuation",
+    "emailAddress",
+    "uRL",
+}
+INPUT_CORRECTION_VALUES = {"default", "yes", "no"}
+INPUT_CAPITALIZATION_VALUES = {"default", "none", "words", "sentences", "allCharacters"}
+RSA_KEY_SIZE_VALUES = {"RsaUnsupported", "Rsa2048", "Rsa3072", "Rsa4096"}
+CONTENT_TYPE_VALUES = {"Lexical", "Text"}
+CONTENT_FORMAT_VALUES = {"FormattedText", "PlainText"}
+ADDRESS_KEYS = {"street", "city", "country", "zip", "state"}
+SSH_METADATA_KEYS = {"privateKey", "publicKey", "fingerprint", "keyType"}
+FORMATTED_TEXT_KEYS = {
+    "content",
+    "content_type",
+    "content_format",
+    "format_version",
+    "plain_text_display_value",
+    "html_display_value",
+}
 
-ACCOUNT_KEYS = {"accountName", "name", "avatar", "email", "uuid", "domain"}
+ACCOUNT_KEYS = {
+    "accountName",
+    "name",
+    "fullName",
+    "avatar",
+    "email",
+    "uuid",
+    "domain",
+}
 VAULT_KEYS = {"uuid", "desc", "avatar", "name", "type"}
 ATTRIBUTE_KEYS = {"version", "description", "timestamp"}
 
@@ -211,7 +245,7 @@ def _validate_login_fields(fields: Any, where: str) -> None:
         _keys(field, LOGIN_FIELD_KEYS, f_where, required={"value", "fieldType"})
         _require_string(field["value"], f"{f_where}.value")
         _require_string(field["fieldType"], f"{f_where}.fieldType")
-        for key in ("id", "name"):
+        for key in ("id", "name", "type"):
             if key in field:
                 _require_string(field[key], f"{f_where}.{key}")
         if "designation" in field:
@@ -222,9 +256,20 @@ def _validate_login_fields(fields: Any, where: str) -> None:
 
 
 def _validate_input_traits(traits: Any, where: str) -> None:
-    _keys(traits, INPUT_TRAIT_KEYS, where)
+    # DetailSectionFieldInputTraits has three non-Option fields.  The serde
+    # visitor at 0x492fc80 returns ``missing field`` when any key is absent.
+    _keys(traits, INPUT_TRAIT_KEYS, where, required=INPUT_TRAIT_KEYS)
+    allowed = {
+        "keyboard": INPUT_KEYBOARD_VALUES,
+        "correction": INPUT_CORRECTION_VALUES,
+        "capitalization": INPUT_CAPITALIZATION_VALUES,
+    }
     for key, value in traits.items():
         _require_string(value, f"{where}.{key}")
+        _require(
+            value in allowed[key],
+            f"{where}.{key}: invalid enum value {value!r}",
+        )
 
 
 def _validate_section_value(value: Any, where: str) -> None:
@@ -240,50 +285,48 @@ def _validate_section_value(value: Any, where: str) -> None:
         _validate_document_attributes(inner, f"{where}.file")
     elif tag == "email":
         e_where = f"{where}.email"
-        _keys(inner, {"email_address", "provider"}, e_where, required={"email_address"})
+        _keys(inner, {"email_address", "provider"}, e_where, required={"email_address", "provider"})
         _require_string(inner["email_address"], f"{e_where}.email_address")
-        if "provider" in inner and inner["provider"] is not None:
+        if inner["provider"] is not None:
             _require_string(inner["provider"], f"{e_where}.provider")
     elif tag == "address":
         a_where = f"{where}.address"
-        _require(isinstance(inner, dict), f"{a_where} must be an object")
+        _keys(inner, ADDRESS_KEYS, a_where, required=ADDRESS_KEYS)
         for key, child in inner.items():
-            _require(
-                key in {"city", "country", "state", "street", "zip"},
-                f"{a_where}: unexpected field {key}",
-            )
             _require_string(child, f"{a_where}.{key}")
     elif tag == "sshKey":
-        _require(isinstance(inner, dict), f"{where}.sshKey must be an object")
-        if "privateKey" in inner:
-            _require_string(inner["privateKey"], f"{where}.sshKey.privateKey")
+        s_where = f"{where}.sshKey"
+        _require(isinstance(inner, dict), f"{s_where} must be an object")
+        _keys(inner, {"privateKey", "metadata"}, s_where, required={"privateKey"})
+        _require_string(inner["privateKey"], f"{s_where}.privateKey")
         if "metadata" in inner:
+            m_where = f"{s_where}.metadata"
             meta = inner["metadata"]
-            _require(isinstance(meta, dict), f"{where}.sshKey.metadata must be an object")
-            for key, child in meta.items():
+            _keys(meta, SSH_METADATA_KEYS, m_where, required=SSH_METADATA_KEYS)
+            for key in ("privateKey", "publicKey", "fingerprint"):
+                _require_string(meta[key], f"{m_where}.{key}")
+            key_type = meta["keyType"]
+            if isinstance(key_type, str):
                 _require(
-                    key in {"fingerprint", "keyType", "privateKey", "publicKey"},
-                    f"{where}.sshKey.metadata: unexpected field {key}",
+                    key_type == "ed25519",
+                    f"{m_where}.keyType: expected 'ed25519' or an rsa object",
                 )
-                if key == "keyType" and isinstance(child, dict):
-                    for k, v in child.items():
-                        _require_string(v, f"{where}.sshKey.metadata.keyType.{k}")
-                elif child is not None:
-                    _require_string(child, f"{where}.sshKey.metadata.{key}")
+            else:
+                _keys(key_type, {"rsa"}, f"{m_where}.keyType", required={"rsa"})
+                _require(
+                    key_type["rsa"] in RSA_KEY_SIZE_VALUES,
+                    f"{m_where}.keyType.rsa: invalid RSA key size",
+                )
     elif tag == "ssoLogin":
         s_where = f"{where}.ssoLogin"
         _require(isinstance(inner, dict), f"{s_where} must be an object")
-        for key, child in inner.items():
-            _require(key in {"provider", "item"}, f"{s_where}: unexpected field {key}")
-            if key == "provider":
-                _require_string(child, f"{s_where}.provider")
-            elif isinstance(child, dict):
-                for k, v in child.items():
-                    _require(
-                        k in {"itemUuid", "vaultUuid"},
-                        f"{s_where}.item: unexpected field {k}",
-                    )
-                    _require_string(v, f"{s_where}.item.{k}")
+        _keys(inner, {"provider", "item"}, s_where, required={"provider"})
+        _require_string(inner["provider"], f"{s_where}.provider")
+        if "item" in inner:
+            i_where = f"{s_where}.item"
+            _keys(inner["item"], {"itemUuid", "vaultUuid"}, i_where, required={"itemUuid", "vaultUuid"})
+            _require_string(inner["item"]["itemUuid"], f"{i_where}.itemUuid")
+            _require_string(inner["item"]["vaultUuid"], f"{i_where}.vaultUuid")
     elif tag in SECTION_STRING_TAGS:
         _require_string(inner, f"{where}.{tag}")
     elif tag in ("date", "monthYear"):
@@ -293,6 +336,36 @@ def _validate_section_value(value: Any, where: str) -> None:
         )
     elif tag == "unsupported":
         _require(inner is None, f"{where}.unsupported must be null")
+    elif tag == "reference":
+        _require_string(inner, f"{where}.reference")
+    elif tag == "formattedText":
+        f_where = f"{where}.formattedText"
+        _keys(inner, FORMATTED_TEXT_KEYS, f_where, required=FORMATTED_TEXT_KEYS)
+        for key in ("content", "plain_text_display_value", "html_display_value"):
+            _require_string(inner[key], f"{f_where}.{key}")
+        _require(
+            inner["content_type"] in CONTENT_TYPE_VALUES,
+            f"{f_where}.content_type: invalid value",
+        )
+        _require(
+            inner["content_format"] in CONTENT_FORMAT_VALUES,
+            f"{f_where}.content_format: invalid value",
+        )
+        _require(
+            isinstance(inner["format_version"], int)
+            and not isinstance(inner["format_version"], bool),
+            f"{f_where}.format_version must be an integer",
+        )
+    elif tag == "managedApplication":
+        m_where = f"{where}.managedApplication"
+        _keys(
+            inner,
+            {"applicationUuid", "loginInitiationUrl"},
+            m_where,
+            required={"applicationUuid", "loginInitiationUrl"},
+        )
+        for key, child in inner.items():
+            _require_string(child, f"{m_where}.{key}")
     else:
         _require(
             isinstance(inner, (dict, str)),
@@ -304,7 +377,7 @@ def _validate_sections(sections: Any, where: str) -> None:
     _require(isinstance(sections, list), f"{where}: sections must be an array")
     for s_index, section in enumerate(sections):
         s_where = f"{where}.sections[{s_index}]"
-        _keys(section, SECTION_KEYS, s_where, required={"fields"})
+        _keys(section, SECTION_KEYS, s_where, required={"title", "fields"})
         for key in ("title", "name"):
             if key in section:
                 _require_string(section[key], f"{s_where}.{key}")
@@ -314,7 +387,20 @@ def _validate_sections(sections: Any, where: str) -> None:
         _require(isinstance(fields, list), f"{s_where}.fields must be an array")
         for f_index, field in enumerate(fields):
             f_where = f"{s_where}.fields[{f_index}]"
-            _keys(field, FIELD_KEYS, f_where)
+            _keys(
+                field,
+                FIELD_KEYS,
+                f_where,
+                required={
+                    "title",
+                    "id",
+                    "value",
+                    "guarded",
+                    "multiline",
+                    "dontGenerate",
+                    "inputTraits",
+                },
+            )
             for key in ("title", "id"):
                 if key in field:
                     _require_string(field[key], f"{f_where}.{key}")
@@ -337,15 +423,30 @@ def _validate_sections(sections: Any, where: str) -> None:
 
 
 def _validate_document_attributes(attrs: Any, where: str) -> None:
-    _keys(attrs, DOCUMENT_KEYS, where, required={"fileName", "documentId"})
+    # DocumentAttributes requires fileName and decryptedSize; documentId is
+    # Option<Uuid> in the serializer (0x4723be0) and may be absent.
+    _keys(attrs, FULL_DOCUMENT_KEYS, where, required={"fileName", "decryptedSize"})
     _require(isinstance(attrs["fileName"], str), f"{where}.fileName must be a string")
-    _require(isinstance(attrs["documentId"], str), f"{where}.documentId must be a string")
-    if "decryptedSize" in attrs:
-        _require(isinstance(attrs["decryptedSize"], int), f"{where}.decryptedSize must be an integer")
+    if "documentId" in attrs:
+        _require(isinstance(attrs["documentId"], str), f"{where}.documentId must be a string")
+    for key in ("decryptedSize", "encryptedSize", "unencryptedSize"):
+        if key in attrs:
+            _require(
+                isinstance(attrs[key], int) and not isinstance(attrs[key], bool),
+                f"{where}.{key} must be an integer",
+            )
+    for key in ("integrityHash", "nonce", "uti"):
+        if key in attrs:
+            _require_string(attrs[key], f"{where}.{key}")
 
 
 def _validate_details(details: Any, where: str, *, allow_passkey: bool) -> None:
-    _keys(details, DETAILS_KEYS, where)
+    _keys(
+        details,
+        DETAILS_KEYS,
+        where,
+        required={"loginFields", "sections", "passwordHistory"},
+    )
     for key in ("notesPlain", "password"):
         if key in details:
             _require_string(details[key], f"{where}.{key}")
@@ -377,8 +478,16 @@ def _validate_details(details: Any, where: str, *, allow_passkey: bool) -> None:
 
 
 def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> None:
-    _keys(overview, OVERVIEW_KEYS, where, required={"title"})
-    for key in ("title", "url", "subtitle", "b5UserUUID", "b5UserUuid", "passkeyId"):
+    # ItemOverview.subtitle is a required String (missing-field call at
+    # 0x4587208 with the literal "subtitle").  The canonical exporter also
+    # always writes url/icons/watchtowerExclusions.
+    _keys(
+        overview,
+        OVERVIEW_KEYS,
+        where,
+        required={"title", "subtitle", "url", "icons", "watchtowerExclusions"},
+    )
+    for key in ("title", "url", "subtitle", "ainfo", "b5UserUuid", "b5UserUUID", "passkeyId"):
         if key in overview:
             _require_string(overview[key], f"{where}.{key}")
     if "urls" in overview:
@@ -387,9 +496,11 @@ def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> Non
             u_where = f"{where}.urls[{index}]"
             _keys(url, URL_KEYS, u_where, required={"url"})
             _require_string(url["url"], f"{u_where}.url")
-            for key in ("label", "mode"):
+            for key in ("label", "mode", "l", "m"):
                 if key in url:
                     _require_string(url[key], f"{u_where}.{key}")
+    if "URLs" in overview:
+        _require(isinstance(overview["URLs"], list), f"{where}.URLs must be an array")
     if "tags" in overview:
         _require(isinstance(overview["tags"], list), f"{where}.tags must be an array")
         for index, tag in enumerate(overview["tags"]):
@@ -405,7 +516,10 @@ def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> Non
     if "pgrng" in overview:
         _require_bool(overview["pgrng"], f"{where}.pgrng")
     if "icons" in overview:
-        _require(isinstance(overview["icons"], dict), f"{where}.icons must be an object")
+        _require(
+            overview["icons"] is None or isinstance(overview["icons"], dict),
+            f"{where}.icons must be null or an object",
+        )
     if "shortcut" in overview:
         s_where = f"{where}.shortcut"
         _keys(overview["shortcut"], SHORTCUT_KEYS, s_where, required={"value"})
@@ -424,15 +538,27 @@ def _validate_overview(overview: Any, where: str, *, allow_passkey: bool) -> Non
     if "locations" in overview:
         _require(isinstance(overview["locations"], list), f"{where}.locations must be an array")
         for index, location in enumerate(overview["locations"]):
-            _require(
-                isinstance(location, dict),
-                f"{where}.locations[{index}] must be an object",
+            l_where = f"{where}.locations[{index}]"
+            _keys(location, {"Gps"}, l_where, required={"Gps"})
+            _keys(
+                location["Gps"],
+                {"id", "location"},
+                f"{l_where}.Gps",
+                required={"id", "location"},
             )
-    if "migrationDestination" in overview:
-        m_where = f"{where}.migrationDestination"
-        _keys(overview["migrationDestination"], MIGRATION_KEYS, m_where)
-        for key, value in overview["migrationDestination"].items():
-            _require_string(value, f"{m_where}.{key}")
+            _require_string(location["Gps"]["id"], f"{l_where}.Gps.id")
+            if location["Gps"]["location"] is not None:
+                _require(
+                    isinstance(location["Gps"]["location"], dict),
+                    f"{l_where}.Gps.location must be null or an object",
+                )
+    for key in ("migrationDestination", "MigrationDestination"):
+        if key in overview:
+            m_key = key
+            m_where = f"{where}.{m_key}"
+            _keys(overview[m_key], MIGRATION_KEYS, m_where)
+            for child_key, value in overview[m_key].items():
+                _require_string(value, f"{m_where}.{child_key}")
     if ("passkey" in overview or "passkeyId" in overview) and not allow_passkey:
         raise SchemaError(f"{where}: passkey metadata is not part of this profile")
 
@@ -480,14 +606,24 @@ def validate_export_data(data: dict, profile: str = PROFILE_OFFICIAL) -> None:
     for a_index, account in enumerate(data["accounts"]):
         where = f"export.data.accounts[{a_index}]"
         _keys(account, {"attrs", "vaults"}, where, required={"attrs", "vaults"})
-        _keys(account["attrs"], ACCOUNT_KEYS, f"{where}.attrs", required=ACCOUNT_KEYS)
+        _keys(
+            account["attrs"],
+            ACCOUNT_KEYS,
+            f"{where}.attrs",
+            required={"accountName", "name", "email", "domain"},
+        )
         for key, value in account["attrs"].items():
             _require_string(value, f"{where}.attrs.{key}")
         _require(isinstance(account["vaults"], list), f"{where}.vaults must be an array")
         for v_index, vault in enumerate(account["vaults"]):
             v_where = f"{where}.vaults[{v_index}]"
             _keys(vault, {"attrs", "items"}, v_where, required={"attrs", "items"})
-            _keys(vault["attrs"], VAULT_KEYS, f"{v_where}.attrs", required=VAULT_KEYS)
+            _keys(
+                vault["attrs"],
+                VAULT_KEYS,
+                f"{v_where}.attrs",
+                required={"uuid", "name", "type"},
+            )
             for key, value in vault["attrs"].items():
                 _require_string(value, f"{v_where}.attrs.{key}")
             _require(isinstance(vault["items"], list), f"{v_where}.items must be an array")
@@ -497,5 +633,9 @@ def validate_export_data(data: dict, profile: str = PROFILE_OFFICIAL) -> None:
                 _validate_item_basics(item, i_where)
                 if not full:
                     allow_passkey = profile == PROFILE_IMPORTER
-                    _validate_details(item["details"], f"{i_where}.details", allow_passkey=allow_passkey)
+                    _validate_details(
+                        item["details"],
+                        f"{i_where}.details",
+                        allow_passkey=allow_passkey,
+                    )
                     _validate_overview(item["overview"], f"{i_where}.overview", allow_passkey=allow_passkey)
