@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import time
 import warnings
 import zipfile
@@ -48,6 +49,69 @@ STATE_DELETED = 2
 _FIELD_BOOLS = {"guarded", "multiline", "dontGenerate"}
 _FIELD_INTS = {"indexAtSource"}
 _FIELD_STRINGS = {"placeholder", "clipboardFilter"}
+
+# SectionFieldValue is an externally tagged enum in both the B5 model and the
+# 1PUX importer.  Canonical output must always be an object with exactly one
+# of these keys; a bare scalar fails serde before the item can be imported.
+SECTION_VALUE_TAGS = {
+    "address",
+    "concealed",
+    "creditCardNumber",
+    "creditCardType",
+    "date",
+    "email",
+    "file",
+    "formattedText",
+    "gender",
+    "managedApplication",
+    "menu",
+    "monthYear",
+    "phone",
+    "reference",
+    "sshKey",
+    "ssoLogin",
+    "string",
+    "totp",
+    "unsupported",
+    "url",
+}
+SECTION_STRING_TAGS = {
+    "concealed",
+    "creditCardNumber",
+    "creditCardType",
+    "email",
+    "gender",
+    "menu",
+    "phone",
+    "string",
+    "totp",
+    "url",
+}
+SECTION_OBJECT_TAGS = {
+    "address",
+    "file",
+    "formattedText",
+    "managedApplication",
+    "reference",
+    "sshKey",
+    "ssoLogin",
+}
+SECTION_SCALAR_TAGS = {"date", "monthYear"}
+WATCHTOWER_KEYS = {
+    "compromised",
+    "vulnerable",
+    "reused",
+    "weak",
+    "unsecured",
+    "inactiveMfa",
+    "expiring",
+    "lastpass",
+    "wrongAccount",
+    "passkeyAvailable",
+    "duplicateItem",
+    "conflictingShortcut",
+}
+MIGRATION_KEYS = ("itemUuid", "accountUuid", "vaultUuid")
 
 
 def item_state(value: object) -> str:
@@ -95,14 +159,65 @@ def _value_to_text(value: object) -> str:
     return str(value)
 
 
-def _typed_value(kind: str | None, value: object) -> object:
+def _normalize_section_value(kind: object, value: object) -> object:
+    """Return a valid externally tagged SectionFieldValue object.
+
+    The official importer deserializes ``value`` as an enum, not as a bare
+    scalar.  Older/local B5 rows occasionally store the scalar directly, so
+    wrap it using the field kind when available and fall back to ``string`` or
+    ``unsupported`` instead of emitting an invalid shape.
+    """
+    tag = str(kind) if isinstance(kind, str) and kind in SECTION_VALUE_TAGS else None
+
+    if tag == "file":
+        if isinstance(value, dict):
+            inner = value.get("file") if isinstance(value.get("file"), dict) else value
+            if inner.get("fileName") and inner.get("documentId"):
+                return {"file": inner}
+        return {"unsupported": value}
+
     if isinstance(value, dict):
-        return value
-    if kind:
-        # B5 SectionFieldValue is a tagged object; the 1PUX importer accepts
-        # the same tagged shape.  Keep unknown tags as-is so no data is lost.
-        return {kind: value}
-    return value
+        present = [key for key in value if key in SECTION_VALUE_TAGS]
+        if len(present) == 1:
+            if present[0] == "file":
+                inner = value["file"]
+                if (
+                    isinstance(inner, dict)
+                    and inner.get("fileName")
+                    and inner.get("documentId")
+                ):
+                    return {"file": inner}
+                return {"unsupported": value}
+            return {present[0]: value[present[0]]}
+        if tag is not None:
+            if tag in SECTION_STRING_TAGS:
+                return {tag: _value_to_text(value)}
+            if tag in SECTION_OBJECT_TAGS or tag in SECTION_SCALAR_TAGS:
+                # These variants expect an object/scalar; preserve an
+                # unexpected shape through the opaque unsupported variant
+                # instead of emitting a value serde will reject.
+                return {"unsupported": value}
+            return {tag: value}
+        return {"unsupported": value}
+
+    if tag is not None:
+        if tag in SECTION_STRING_TAGS and not isinstance(value, str):
+            value = _value_to_text(value)
+        if tag in SECTION_OBJECT_TAGS:
+            return {"unsupported": value}
+        if tag in SECTION_SCALAR_TAGS and (
+            isinstance(value, bool) or not isinstance(value, (int, str))
+        ):
+            return {"unsupported": value}
+        return {tag: value}
+
+    if isinstance(value, str):
+        return {"string": value}
+    if isinstance(value, (int, float, bool)):
+        return {"string": _value_to_text(value)}
+    if isinstance(value, list):
+        return {"unsupported": value}
+    return {"string": _value_to_text(value)}
 
 
 def _convert_input_traits(traits: object) -> dict:
@@ -131,7 +246,7 @@ def _convert_section_field(
     if "value" in field:
         value = field["value"]
     elif "v" in field:
-        value = _typed_value(kind, field["v"])
+        value = field["v"]
     else:
         value = None
 
@@ -147,6 +262,9 @@ def _convert_section_field(
                     return None
                 file_name, content = file_info[str(document_id)]
                 value = {"file": clean_file_reference(file_reference, len(content))}
+
+    if value is not None:
+        value = _normalize_section_value(kind, value)
 
     result: dict[str, Any] = {"title": str(title or ""), "id": str(field_id or "")}
     if value is not None:
@@ -386,9 +504,26 @@ def _normalize_overview(
     tags = source.get("tags")
     if isinstance(tags, list) and tags:
         result["tags"] = [str(tag) for tag in tags]
-    for key in ("ps", "pbe", "pgrng"):
-        if key in source and source[key] is not None:
-            result[key] = source[key]
+    if source.get("ps") is not None:
+        parsed = _as_int(source["ps"])
+        if parsed is not None and 0 <= parsed <= 255:
+            result["ps"] = parsed
+    if source.get("pbe") is not None:
+        pbe = source["pbe"]
+        parsed_pbe: float | None = None
+        if isinstance(pbe, (int, float)) and not isinstance(pbe, bool):
+            parsed_pbe = float(pbe)
+        elif isinstance(pbe, str):
+            try:
+                parsed_pbe = float(pbe)
+            except ValueError:
+                parsed_pbe = None
+        # Python's json.dumps writes NaN/Infinity by default, but serde_json
+        # rejects them as invalid JSON.  Omit non-finite values.
+        if parsed_pbe is not None and math.isfinite(parsed_pbe):
+            result["pbe"] = parsed_pbe
+    if source.get("pgrng") is not None:
+        result["pgrng"] = _as_bool(source["pgrng"])
 
     subtitle = source.get("subtitle") or source.get("ainfo") or ""
     if not subtitle and category_uuid in ("001", "005"):
@@ -402,32 +537,63 @@ def _normalize_overview(
     # ``appIds`` exists only in the local B5 overview and is not accepted by
     # the v3 importer's ItemOverview field visitor.  ``passkey``/``passkeyId``
     # are importer-only because the exporter path does not emit passkeys.
-    for key in (
-        "passkey",
-        "passkeyId",
-        "locations",
-        "b5UserUUID",
-        "watchtowerExclusions",
-    ):
+    for key in ("passkey", "passkeyId", "b5UserUUID", "b5UserUuid"):
         if key not in source or source[key] in (None, [], {}):
             continue
         if key in ("passkey", "passkeyId") and profile != PROFILE_IMPORTER:
             continue
         result[key] = source[key]
 
+    locations = source.get("locations")
+    if isinstance(locations, list):
+        cleaned_locations = [item for item in locations if isinstance(item, dict)]
+        if cleaned_locations:
+            result["locations"] = cleaned_locations
+
+    exclusions = source.get("watchtowerExclusions")
+    if isinstance(exclusions, dict) and exclusions:
+        result["watchtowerExclusions"] = {
+            key: _as_bool(exclusions.get(key, False)) for key in WATCHTOWER_KEYS
+        }
+    elif isinstance(exclusions, list) and exclusions:
+        selected = {
+            key for key in exclusions if isinstance(key, str) and key in WATCHTOWER_KEYS
+        }
+        if selected:
+            result["watchtowerExclusions"] = {
+                key: key in selected for key in WATCHTOWER_KEYS
+            }
+
     # The v3 ItemShortcut is a struct, while older/local overviews may store
-    # just the shortcut string.  Normalize the scalar form.
+    # just the shortcut string.  Normalize both forms and drop unknown keys.
     shortcut = source.get("shortcut")
     if isinstance(shortcut, str) and shortcut:
         result["shortcut"] = {"value": shortcut}
-    elif isinstance(shortcut, dict) and shortcut:
-        result["shortcut"] = shortcut
+    elif isinstance(shortcut, dict):
+        value = (
+            shortcut.get("value")
+            or shortcut.get("key")
+            or shortcut.get("shortcut")
+            or shortcut.get("text")
+        )
+        if value:
+            result["shortcut"] = {
+                "value": str(value),
+                "case_sensitive": _as_bool(shortcut.get("case_sensitive", False)),
+            }
 
     # The exporter emits ``migrationDestination`` for items migrated from
-    # another account.  The local B5 overview may use either spelling.
+    # another account.  The local B5 overview may use either spelling; keep
+    # only the three fields the importer struct understands.
     migration = source.get("migrationDestination", source.get("MigrationDestination"))
-    if isinstance(migration, dict) and migration:
-        result["migrationDestination"] = migration
+    if isinstance(migration, dict):
+        cleaned = {
+            key: str(migration[key])
+            for key in MIGRATION_KEYS
+            if migration.get(key) is not None
+        }
+        if len(cleaned) == len(MIGRATION_KEYS):
+            result["migrationDestination"] = cleaned
     return result
 
 
@@ -539,21 +705,24 @@ def build_export_data(
 
             file_info: dict[str, tuple[str, bytes]] = {}
             raw_details = item.details or {}
-            for reference in iter_file_references(raw_details):
-                document_id = str(
-                    reference.get("documentId") or reference.get("document_id") or ""
-                )
-                if not document_id or document_id in file_info:
-                    continue
-                try:
-                    extracted = extract_file_reference(
-                        reference, account.uuid, files_dir, fallback_key=vault.key
+            if files_dir is not None:
+                for reference in iter_file_references(raw_details):
+                    document_id = str(
+                        reference.get("documentId")
+                        or reference.get("document_id")
+                        or ""
                     )
-                except (FileNotFoundError, DecryptionError, ValueError) as exc:
-                    warnings.warn(f"item {item.uuid}: {exc}", stacklevel=2)
-                    continue
-                if extracted is not None:
-                    file_info[document_id] = extracted
+                    if not document_id or document_id in file_info:
+                        continue
+                    try:
+                        extracted = extract_file_reference(
+                            reference, account.uuid, files_dir, fallback_key=vault.key
+                        )
+                    except (FileNotFoundError, DecryptionError, ValueError) as exc:
+                        warnings.warn(f"item {item.uuid}: {exc}", stacklevel=2)
+                        continue
+                    if extracted is not None:
+                        file_info[document_id] = extracted
 
             if (
                 profile != PROFILE_FULL
@@ -561,10 +730,14 @@ def build_export_data(
                 and isinstance(raw_details.get("documentAttributes"), dict)
                 and not file_info
             ):
-                warnings.warn(
-                    f"item {item.uuid}: document item has no locally available file; skipping",
-                    stacklevel=2,
-                )
+                # ``--no-files`` deliberately skips document items; only warn
+                # when a files directory was supplied but the blob is absent.
+                if files_dir is not None:
+                    warnings.warn(
+                        f"item {item.uuid}: document item has no locally "
+                        "available file; skipping",
+                        stacklevel=2,
+                    )
                 continue
 
             normalized = _normalize_item(item, None, profile, file_info)

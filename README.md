@@ -92,6 +92,13 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
   importer accepts `state: "deleted"`, and `full` keeps everything.
 - Documents are only included if the encrypted blobs are present under the
   local `files/` cache.  The tool cannot download missing attachments.
+  `--no-files` silently omits Document items and attachment fields (no
+  warning), while a missing blob under an explicitly supplied `--files-dir`
+  still produces a warning.
+- Before writing the 1PUX, the exporter validates the generated JSON with the
+  same types the official importer expects (including section-field tags and
+  overview scalar types).  A mismatch is reported with an exact
+  `export.data...` path instead of a generic "data model was malformed".
 - The 1PUX exporter follows the official v3 schema recovered from the
   desktop core: exactly eight item fields, the canonical item details/overview
   key sets, long-form section fields, and `export.attributes.timestamp`.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -293,3 +294,51 @@ def test_deleted_items_follow_the_official_exporter():
 
     full, _ = build_export_data(account, profile=PROFILE_FULL)
     assert full["accounts"][0]["vaults"][0]["items"][0]["state"] == "deleted"
+
+
+def test_section_scalar_value_is_tagged():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "name": "s",
+                "fields": [{"title": "Note", "id": "n1", "value": "plain text"}],
+            }
+        ]
+    }
+    data, _ = build_export_data(account, profile=PROFILE_OFFICIAL)
+    field = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0]["fields"][0]
+    assert field["value"] == {"string": "plain text"}
+
+
+def test_overview_types_are_checked():
+    import pytest
+
+    from onedecrypt.pux_schema import _validate_overview
+
+    with pytest.raises(SchemaError, match="ps"):
+        _validate_overview({"title": "Example", "ps": 100.5}, "overview", allow_passkey=False)
+
+
+def test_no_files_suppresses_document_warnings():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["category_uuid"] = "006"
+    item.details = {
+        "documentAttributes": {
+            "fileName": "missing.pdf",
+            "documentId": "missing",
+            "decryptedSize": 10,
+        }
+    }
+    item.overview = {"title": "Missing document"}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        data, files = build_export_data(account, files_dir=None)
+    assert data["accounts"][0]["vaults"][0]["items"] == []
+    assert files == {}
+    assert not [w for w in caught if "no locally available file" in str(w.message)]
