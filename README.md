@@ -91,10 +91,12 @@ closed at the AES-GCM tag check; it cannot produce a corrupted export.
   `official`/`exporter` skip deleted items; `importer` keeps them because the
   importer accepts `state: "deleted"`, and `full` keeps everything.
 - Documents are only included if the encrypted blobs are present under the
-  local `files/` cache.  The tool cannot download missing attachments.
-  `--no-files` silently omits Document items and attachment fields (no
-  warning), while a missing blob under an explicitly supplied `--files-dir`
-  still produces a warning.
+  local `files/` cache.  The tool cannot download missing attachments.  By
+  default, a missing blob is handled best-effort: the related JSON field is
+  removed (a Document item keeps its title/notes but loses
+  `documentAttributes`; an attachment field is dropped).  `--no-files`
+  performs the same JSON cleanup without attempting to read any file, and
+  without per-item missing-file warnings.
 - Before writing the 1PUX, the exporter validates the generated JSON with the
   same types the official importer expects (including section-field tags and
   overview scalar types).  A mismatch is reported with an exact

@@ -259,7 +259,7 @@ def test_section_file_reference_is_cleaned_and_exported(tmp_path: Path):
     }
 
 
-def test_missing_document_item_is_skipped(tmp_path: Path):
+def test_missing_document_item_keeps_item_without_file(tmp_path: Path):
     account = synthetic_account()
     account.vaults[0].key = b"x" * 32
     item = account.vaults[0].items[0]
@@ -273,8 +273,19 @@ def test_missing_document_item_is_skipped(tmp_path: Path):
     }
     item.overview = {"title": "Missing document"}
     data, files = build_export_data(account, tmp_path / "files")
-    assert data["accounts"][0]["vaults"][0]["items"] == []
+    items = data["accounts"][0]["vaults"][0]["items"]
+    assert len(items) == 1
+    assert items[0]["overview"]["title"] == "Missing document"
+    assert "documentAttributes" not in items[0]["details"]
     assert files == {}
+
+    full, full_files = build_export_data(
+        account, tmp_path / "files", profile=PROFILE_FULL
+    )
+    full_items = full["accounts"][0]["vaults"][0]["items"]
+    assert len(full_items) == 1
+    assert "documentAttributes" not in full_items[0]["details"]
+    assert full_files == {}
 
 
 def test_deleted_items_follow_the_official_exporter():
@@ -339,7 +350,10 @@ def test_no_files_suppresses_document_warnings():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         data, files = build_export_data(account, files_dir=None)
-    assert data["accounts"][0]["vaults"][0]["items"] == []
+    items = data["accounts"][0]["vaults"][0]["items"]
+    assert len(items) == 1
+    assert items[0]["overview"]["title"] == "Missing document"
+    assert "documentAttributes" not in items[0]["details"]
     assert files == {}
     assert not [w for w in caught if "no locally available file" in str(w.message)]
 

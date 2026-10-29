@@ -647,6 +647,45 @@ def _normalize_overview(
     return result
 
 
+
+def _file_reference_id(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    inner = value.get("file") if isinstance(value.get("file"), dict) else value
+    return str(inner.get("documentId") or inner.get("document_id") or "")
+
+
+def _strip_missing_file_refs(
+    details: dict, file_info: dict[str, tuple[str, bytes]]
+) -> dict:
+    """Full-profile equivalent of dropping unavailable file references."""
+    result = copy.deepcopy(details)
+    attrs = result.get("documentAttributes")
+    if isinstance(attrs, dict):
+        document_id = _file_reference_id(attrs)
+        if document_id and document_id not in file_info:
+            result.pop("documentAttributes", None)
+    sections = result.get("sections")
+    if isinstance(sections, list):
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            fields = section.get("fields")
+            if not isinstance(fields, list):
+                continue
+            kept = []
+            for field in fields:
+                if isinstance(field, dict):
+                    document_id = _file_reference_id(
+                        field.get("value", field.get("v"))
+                    )
+                    if document_id and document_id not in file_info:
+                        continue
+                kept.append(field)
+            section["fields"] = kept
+    return result
+
+
 def _normalize_item(
     item: Item,
     document_size: int | None = None,
@@ -655,9 +694,12 @@ def _normalize_item(
 ) -> dict:
     data = item.data
     category_uuid = str(data.get("category_uuid", ""))
-    details = _normalize_details(
-        item.details or {}, category_uuid, document_size, profile, file_info
-    )
+    if profile == PROFILE_FULL and file_info is not None:
+        details = _strip_missing_file_refs(item.details or {}, file_info)
+    else:
+        details = _normalize_details(
+            item.details or {}, category_uuid, document_size, profile, file_info
+        )
     if profile == PROFILE_FULL:
         overview = copy.deepcopy(item.overview or {})
     else:
@@ -775,20 +817,16 @@ def build_export_data(
                         file_info[document_id] = extracted
 
             if (
-                profile != PROFILE_FULL
+                files_dir is not None
                 and str(item.data.get("category_uuid", "")) == "006"
                 and isinstance(raw_details.get("documentAttributes"), dict)
                 and not file_info
             ):
-                # ``--no-files`` deliberately skips document items; only warn
-                # when a files directory was supplied but the blob is absent.
-                if files_dir is not None:
-                    warnings.warn(
-                        f"item {item.uuid}: document item has no locally "
-                        "available file; skipping",
-                        stacklevel=2,
-                    )
-                continue
+                warnings.warn(
+                    f"item {item.uuid}: document item has no locally "
+                    "available file; exporting it without documentAttributes",
+                    stacklevel=2,
+                )
 
             normalized = _normalize_item(item, None, profile, file_info)
             items.append(normalized)
