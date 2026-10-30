@@ -21,41 +21,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 import zipfile
 from pathlib import Path
 from typing import Any
 
-
-def shape(value: Any) -> dict[str, Any]:
-    """Describe a JSON value without including any of its contents."""
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, bool):
-        return {"type": "boolean"}
-    if isinstance(value, int):
-        return {"type": "integer"}
-    if isinstance(value, float):
-        return {"type": "number", "finite": math.isfinite(value)}
-    if isinstance(value, str):
-        return {"type": "string"}
-    if isinstance(value, list):
-        shapes: dict[str, dict[str, Any]] = {}
-        for item in value:
-            descriptor = shape(item)
-            shapes[json.dumps(descriptor, sort_keys=True)] = descriptor
-        return {
-            "type": "array",
-            "length": len(value),
-            "items": list(shapes.values()),
-        }
-    if isinstance(value, dict):
-        return {
-            "type": "object",
-            "keys": {key: shape(child) for key, child in value.items()},
-        }
-    return {"type": type(value).__name__}
+# Allow both ``python scripts/1pux_shape.py`` and
+# ``python -m scripts.1pux_shape``.
+if __package__:
+    from .shape import shape
+else:
+    from shape import shape
 
 
 def build_report(path: Path) -> dict[str, Any]:
