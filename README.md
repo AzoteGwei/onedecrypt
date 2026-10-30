@@ -69,6 +69,22 @@ account.  When the emails are identical, select the account by its UUID (the
 third column of `list-accounts`).  The wrong Secret Key for an account fails
 closed at the AES-GCM tag check; it cannot produce a corrupted export.
 
+## Shape reports
+
+Two diagnostic scripts print value-free structural reports: JSON types, object
+key names, array lengths and the distinct shapes of array elements.  Values are
+never printed.
+
+```bash
+# 1PUX archive (export.attributes / export.data / files count)
+uv run python scripts/1pux_shape.py rescue.1pux
+
+# Any JSON document
+uv run python scripts/json_shape.py data.json
+```
+
+Both accept `-o <path>` to write the report to a file.
+
 ## What is implemented
 
 - 2SKD MUK derivation for `PBES2g-HS256` accounts (650,000 iterations in the
