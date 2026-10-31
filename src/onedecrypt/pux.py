@@ -16,7 +16,9 @@ particular:
 
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 import math
 import re
@@ -25,6 +27,10 @@ import warnings
 import zipfile
 from pathlib import Path
 from typing import Any
+
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from .crypto import DecryptionError
 from .database import Account, Item, Vault
@@ -263,14 +269,127 @@ def _looks_like_private_key(value: object) -> bool:
     return head.startswith("-----BEGIN ") and "PRIVATE KEY-----" in head
 
 
+def _der_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
+    """Read one DER tag-length-value item and return its content."""
+    tag = data[offset]
+    length = data[offset + 1]
+    offset += 2
+    if length & 0x80:
+        count = length & 0x7F
+        length = int.from_bytes(data[offset : offset + count], "big")
+        offset += count
+    end = offset + length
+    if end > len(data):
+        raise ValueError("truncated DER value")
+    return tag, data[offset:end], end
+
+
+def _ssh_public_key_line(raw_ed25519: bytes) -> str:
+    """Build the OpenSSH ``ssh-ed25519`` line for a raw public key."""
+
+    def field(value: bytes) -> bytes:
+        return len(value).to_bytes(4, "big") + value
+
+    blob = field(b"ssh-ed25519") + field(raw_ed25519)
+    return "ssh-ed25519 " + base64.b64encode(blob).decode("ascii")
+
+
+def _ssh_fingerprint(public_key: str) -> str:
+    blob = base64.b64decode(public_key.split()[1])
+    digest = hashlib.sha256(blob).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _embedded_ed25519_public_key(private_key: str) -> bytes | None:
+    """Extract the public key from 1Password's extended PKCS#8 wrapper.
+
+    1Password stores Ed25519 keys as PKCS#8 with an extra context-specific
+    public-key field.  OpenSSL and cryptography reject that extra field, but
+    the embedded public key is exactly what the export metadata needs.
+    """
+    body = "".join(
+        line for line in private_key.splitlines() if not line.startswith("-----")
+    ).strip()
+    if not body:
+        return None
+    try:
+        der = base64.b64decode(body)
+        tag, outer, end = _der_tlv(der, 0)
+        if tag != 0x30 or end != len(der):
+            return None
+        offset = 0
+        _, _, offset = _der_tlv(outer, offset)  # version
+        _, algorithm, offset = _der_tlv(outer, offset)
+        if algorithm != bytes.fromhex("06032b6570"):  # id-Ed25519
+            return None
+        _, _, offset = _der_tlv(outer, offset)  # private key
+        tag, context, _ = _der_tlv(outer, offset)
+        if tag == 0x81:
+            if len(context) == 33 and context[0] == 0:
+                return context[1:]
+        elif tag == 0xA1:
+            tag, bit_string, _ = _der_tlv(context, 0)
+            if tag == 0x03 and len(bit_string) == 33 and bit_string[0] == 0:
+                return bit_string[1:]
+    except (IndexError, ValueError):
+        return None
+    return None
+
+
+def _load_private_key(private_key: str):
+    encoded = private_key.encode()
+    for loader in (
+        serialization.load_pem_private_key,
+        serialization.load_ssh_private_key,
+    ):
+        try:
+            return loader(encoded, password=None)
+        except (TypeError, ValueError, UnsupportedAlgorithm):
+            pass
+    return None
+
+
+def _derive_ssh_metadata(private_key: str) -> dict | None:
+    """Derive the metadata the official exporter writes for an SSH key."""
+    if not private_key:
+        return None
+    embedded = _embedded_ed25519_public_key(private_key)
+    if embedded is not None:
+        public_key = _ssh_public_key_line(embedded)
+        key_type: object = "ed25519"
+    else:
+        key = _load_private_key(private_key)
+        if key is None:
+            return None
+        try:
+            public_key = key.public_key().public_bytes(
+                serialization.Encoding.OpenSSH,
+                serialization.PublicFormat.OpenSSH,
+            ).decode("ascii")
+        except (TypeError, ValueError):
+            return None
+        if isinstance(key, ed25519.Ed25519PrivateKey):
+            key_type = "ed25519"
+        elif isinstance(key, rsa.RSAPrivateKey):
+            key_type = {"rsa": _normalize_rsa_size(key.key_size)}
+        else:
+            return None
+    return {
+        "privateKey": private_key,
+        "publicKey": public_key,
+        "fingerprint": _ssh_fingerprint(public_key),
+        "keyType": key_type,
+    }
+
+
 def _normalize_ssh_key(value: object) -> dict | None:
     """Normalize a local SSH key field value.
 
     The official wire value is ``{"privateKey": ..., "metadata": {...}}``.
     Local B5 rows can store the same object, a bare private-key string, or a
     flat object with ``privateKey``/``publicKey``/``fingerprint``/``keyType``.
-    The importer can derive the metadata when it is absent, so ``metadata`` is
-    only emitted when the source actually contains it.
+    When metadata is absent, derive it from the key so the official importer
+    can validate the SSH key without reparsing the private key itself.
     """
     if isinstance(value, dict) and len(value) == 1:
         only, wrapped = next(iter(value.items()))
@@ -302,6 +421,8 @@ def _normalize_ssh_key(value: object) -> dict | None:
         metadata = inner
     if not isinstance(metadata, dict):
         metadata = None
+    if metadata is None:
+        metadata = _derive_ssh_metadata(private_key)
 
     if metadata is not None:
         metadata_private = _text_value(

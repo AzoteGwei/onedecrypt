@@ -154,9 +154,20 @@ The strict 1PUX v3 exporter converts the login `fields` array to
 fields present in the selected schema profile.  SSH keys are a
 `SectionFieldValue` variant, not an `ItemDetails` field; older local rows may
 store the key as bare text, a single-key `concealed`/`string` wrapper, or a
-`ssh_key`/`private_key` tag, so the exporter normalizes all of those to
-`{"sshKey": {"privateKey": ...}}`.  The importer derives the missing public
-key/fingerprint/key type from the private key.  For category 114, a
+`ssh_key`/`private_key` tag, so the exporter normalizes all of those to the
+typed `sshKey` value and includes `metadata` when it can derive it.  The
+official importer uses supplied metadata directly and otherwise reparses the
+private key.  onedecrypt therefore derives the public key, fingerprint and
+key type when the local row omits them; for 1Password's extended PKCS#8
+Ed25519 wrapper it reads the embedded public key, and for standard
+PEM/OpenSSH keys it parses the key with `cryptography`.  Unparseable keys
+stay private-key-only.
+
+Binary Ninja confirms the importer path:
+`SectionFieldValue::into_op_model` at `0x6171180` uses `metadata` when
+present and otherwise calls `PrivateKey::from_pem` (`0x652e4e0`);
+`SshKeyMetadata`'s field visitor at `0x4740550` accepts
+`privateKey`/`publicKey`/`fingerprint`/`keyType`.  For category 114, a
 PEM/private-key value is recognized even when the row still calls the field
 `string` or `concealed`; a plain field whose id/title mentions a private key
 is also converted, except for whole-word passphrase/password/pin labels, and

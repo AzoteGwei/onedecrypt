@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,7 +16,13 @@ from helpers import synthetic_account, sym_jwk
 from onedecrypt.crypto import b64u
 from onedecrypt.database import Account, Item, Vault
 from onedecrypt.decrypt import decrypt_account
-from onedecrypt.pux import build_export_data, item_state, shape_report, write_1pux
+from onedecrypt.pux import (
+    _normalize_ssh_key,
+    build_export_data,
+    item_state,
+    shape_report,
+    write_1pux,
+)
 from onedecrypt.pux_schema import (
     ITEM_KEYS,
     PROFILE_EXPORTER,
@@ -274,6 +281,8 @@ def test_scalar_ssh_private_key_becomes_ssh_key_value():
     account.vaults[0].key = b"x" * 32
     item = account.vaults[0].items[0]
     item.data["category_uuid"] = "114"
+    # Intentionally truncated: these cases exercise value-wrapper detection,
+    # not key derivation.  Metadata derivation has its own valid-key tests.
     pem = (
         "-----BEGIN PRIVATE KEY-----\n"
         "MFECAQEwBQYDK2VwBCIEIDIPmvzXim/Xt94YrEmBnNpcUKZm1mSDYpZoJmNEAzW6\n"
@@ -364,6 +373,159 @@ def test_scalar_ssh_private_key_becomes_ssh_key_value():
     assert fields[7]["value"] == {"sshKey": {"privateKey": pem}}
     assert fields[8]["value"] == {"sshKey": {"privateKey": pem}}
     validate_export_data(data, PROFILE_OFFICIAL)
+
+
+def test_ssh_private_key_gets_derived_metadata_when_absent():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.data["category_uuid"] = "114"
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MFECAQEwBQYDK2VwBCIEIDIPmvzXim/Xt94YrEmBnNpcUKZm1mSDYpZoJmNEAzW6\n"
+        "gSEARf82aTvILLgxbvqAeb5T03jhFsN/4ep9gnzmlfEvMK8=\n"
+        "-----END PRIVATE KEY-----\n"
+    )
+    item.details = {
+        "sections": [
+            {
+                "title": "",
+                "fields": [
+                    {
+                        "title": "private key",
+                        "id": "private_key",
+                        "v": {"privateKey": pem},
+                    }
+                ],
+            }
+        ]
+    }
+    data, _ = build_export_data(account)
+    field = data["accounts"][0]["vaults"][0]["items"][0]["details"]["sections"][0][
+        "fields"
+    ][0]
+    assert field["value"] == {
+        "sshKey": {
+            "privateKey": pem,
+            "metadata": {
+                "privateKey": pem,
+                "publicKey": (
+                    "ssh-ed25519 "
+                    "AAAAC3NzaC1lZDI1NTE5AAAAIEX/Nmk7yCy4MW76gHm+U9N44RbDf+HqfYJ85pXxLzCv"
+                ),
+                "fingerprint": "SHA256:HndTHnN/ZwVjACKLhnE27P6XGS4ihrb3QC07Sc5cpsg",
+                "keyType": "ed25519",
+            },
+        }
+    }
+    validate_export_data(data, PROFILE_OFFICIAL)
+
+
+def test_ssh_extended_pkcs8_a1_wrapper_gets_metadata():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    def tlv(tag: int, content: bytes) -> bytes:
+        if len(content) < 0x80:
+            return bytes([tag, len(content)]) + content
+        length = len(content).to_bytes((len(content).bit_length() + 7) // 8, "big")
+        return bytes([tag, 0x80 | len(length)]) + length + content
+
+    def read_tlv(data: bytes, offset: int):
+        tag = data[offset]
+        length = data[offset + 1]
+        offset += 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(data[offset : offset + count], "big")
+            offset += count
+        return tag, data[offset : offset + length], offset + length
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    pkcs8 = key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    _, outer, _ = read_tlv(pkcs8, 0)
+    raw_public = key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    bit_string = tlv(0x03, b"\x00" + raw_public)
+    wrapped = tlv(0x30, outer + tlv(0xA1, bit_string))
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        + base64.encodebytes(wrapped).decode("ascii")
+        + "-----END PRIVATE KEY-----\n"
+    )
+    value = _normalize_ssh_key({"privateKey": pem})
+    assert value["metadata"]["publicKey"] == key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    ).decode("ascii")
+    assert value["metadata"]["keyType"] == "ed25519"
+
+
+def test_standard_ssh_keys_get_metadata():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+
+    ed_key = ed25519.Ed25519PrivateKey.generate()
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    cases = [
+        (ed_key, serialization.PrivateFormat.PKCS8, "ed25519"),
+        (ed_key, serialization.PrivateFormat.OpenSSH, "ed25519"),
+        (rsa_key, serialization.PrivateFormat.PKCS8, {"rsa": "Rsa2048"}),
+        (
+            rsa_key,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            {"rsa": "Rsa2048"},
+        ),
+    ]
+    for key, private_format, expected_type in cases:
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            private_format,
+            serialization.NoEncryption(),
+        ).decode("ascii")
+        value = _normalize_ssh_key({"privateKey": pem})
+        assert value["metadata"]["publicKey"] == key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        ).decode("ascii")
+        assert value["metadata"]["fingerprint"].startswith("SHA256:")
+        assert value["metadata"]["keyType"] == expected_type
+
+
+def test_unsupported_openssh_key_keeps_private_key_only():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    )
+    body = b"".join(
+        line for line in pem.splitlines() if not line.startswith(b"-----")
+    )
+    raw = bytearray(base64.b64decode(body))
+    magic = b"openssh-key-v1\x00"
+    cipher_length = int.from_bytes(raw[len(magic) : len(magic) + 4], "big")
+    cipher_offset = len(magic) + 4
+    # Replace the "none" cipher with an unknown same-length name so
+    # cryptography raises UnsupportedAlgorithm instead of ValueError.
+    raw[cipher_offset : cipher_offset + cipher_length] = b"aes2"
+    unsupported = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        + base64.encodebytes(bytes(raw)).decode("ascii")
+        + "-----END OPENSSH PRIVATE KEY-----\n"
+    )
+    assert _normalize_ssh_key({"privateKey": unsupported}) == {
+        "privateKey": unsupported
+    }
 
 
 def test_full_profile_keeps_extra_metadata():

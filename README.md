@@ -127,10 +127,11 @@ Both accept `-o <path>` to write the report to a file.
   not a way to restore passkeys into the official app.
   Custom icon files are not exported.  File entries use
   `files/<documentId>__<fileName>` (two underscores), matching the actual
-  exporter/importer format string.  SSH key section fields are always written
-  as the typed `{"sshKey": {"privateKey": ...}}` value; if the local row only
-  contains private-key text, the importer derives the public key, fingerprint
-  and key type during import.
+  exporter/importer format string.  SSH key section fields are written as the
+  typed `sshKey` value, including `metadata` when onedecrypt can derive it.
+  When the local row omits metadata, onedecrypt derives the public key,
+  fingerprint and key type, including 1Password's extended PKCS#8 wrapper, and
+  falls back to private-key-only when the key cannot be parsed.
 
 ## Security
 
