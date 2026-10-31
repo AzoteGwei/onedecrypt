@@ -39,6 +39,13 @@ the shipped serde visitors accept but the exporter does not emit, for example:
 - `OverviewUrl.l`, `u`, `m`
 - `DocumentAttributes.encryptedSize`, `unencryptedSize`, `integrityHash`, `nonce`, `signingKey`, `encryptionKey`, `uti`
 
+`URLs` is an accepted local/legacy spelling, and local URL entries may use
+short `l`/`u`/`m` keys, bare URL strings, or two- or three-element sequences.
+The canonical profiles normalize these to the official exporter shape:
+lowercase `urls` entries with `label`, `url` and `mode`.  Numeric mode values
+are accepted as a local convenience.  When the local `overview.url` is empty,
+the first URL entry becomes the primary URL.
+
 `importer` mirrors the binary's mixed unknown-field behavior: the v3
 top-level/wrapper structs ignore unknown keys (`additionalProperties: true`),
 while the v2 nested structs (`ItemDetails`, `ItemOverview`, `LoginField`,

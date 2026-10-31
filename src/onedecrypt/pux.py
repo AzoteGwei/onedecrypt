@@ -870,25 +870,72 @@ URL_MODES = {
     "default": "default",
     "anywhereonwebsite": "default",
     "anywhere": "default",
+    "website": "default",
     "host": "host",
     "exact": "host",
+    "exacthost": "host",
+    "exact host": "host",
     "never": "never",
+    "neveronwebsite": "never",
+    "never on website": "never",
 }
+URL_MODE_INDEX = {0: "default", 1: "host", 2: "never"}
+
+
+def _url_mode(value: object) -> str:
+    if value is None or value == "" or isinstance(value, bool):
+        return "default"
+    if isinstance(value, int):
+        return URL_MODE_INDEX.get(value, "default")
+    return URL_MODES.get(str(value).strip().lower(), "default")
 
 
 def _convert_url(url: object) -> dict | None:
-    if not isinstance(url, dict):
+    """Normalize one B5/1PUX URL entry.
+
+    Canonical rows use an object with ``label``/``url``/``mode``.  Local and
+    legacy rows may also use the short ``l``/``u``/``m`` keys, a bare URL
+    string, or a two/three-element sequence.  Normalize those forms instead
+    of dropping the entry; the canonical output always uses long keys.
+    """
+    label: object = ""
+    target: object = ""
+    mode: object = None
+    if isinstance(url, dict):
+        target = url.get("url", url.get("u", ""))
+        label = url.get("label", url.get("l", ""))
+        mode = url.get("mode", url.get("m"))
+    elif isinstance(url, (list, tuple)):
+        if len(url) >= 2:
+            label, target = url[0], url[1]
+            if len(url) >= 3:
+                mode = url[2]
+    elif isinstance(url, str):
+        target = url
+    if not isinstance(target, str) or not target:
         return None
-    target = url.get("url", url.get("u", ""))
-    if not target:
-        return None
-    result = {"label": str(url.get("label", url.get("l", "")) or ""), "url": str(target)}
-    # B5/local JSON uses either the long or the short spelling; the official
-    # exporter writes the canonical ``mode`` key with the lowercase
-    # ItemUrlMode spelling (default/host/never).
-    mode = url.get("mode", url.get("m"))
-    result["mode"] = URL_MODES.get(str(mode).strip().lower(), "default") if mode else "default"
-    return result
+    return {
+        "label": _text_value(label),
+        "url": target,
+        "mode": _url_mode(mode),
+    }
+
+
+def _overview_urls(source: dict) -> list[dict]:
+    """Return all canonical URL entries from an overview object.
+
+    B5 rows may spell the field ``URLs`` while the 1PUX wire format uses
+    ``urls``; the official importer treats them as aliases.  Prefer the
+    canonical spelling and fall back to the legacy one.
+    """
+    for key in ("urls", "URLs"):
+        values = source.get(key)
+        if not isinstance(values, list):
+            continue
+        converted = [u for u in (_convert_url(item) for item in values) if u]
+        if converted:
+            return converted
+    return []
 
 
 def _normalize_location(value: object) -> dict | None:
@@ -936,11 +983,13 @@ def _normalize_overview(
     result["icons"] = None
     result["watchtowerExclusions"] = None
 
-    urls = source.get("urls")
-    if isinstance(urls, list):
-        converted_urls = [u for u in (_convert_url(item) for item in urls) if u]
-        if converted_urls:
-            result["urls"] = converted_urls
+    converted_urls = _overview_urls(source)
+    if converted_urls:
+        result["urls"] = converted_urls
+        if not result["url"]:
+            # Local rows may omit the singular primary URL even though they
+            # carry a website list.
+            result["url"] = converted_urls[0]["url"]
     tags = source.get("tags")
     if isinstance(tags, list) and tags:
         result["tags"] = [str(tag) for tag in tags]

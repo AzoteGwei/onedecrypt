@@ -141,6 +141,77 @@ def test_short_section_fields_are_converted():
     assert "ainfo" not in overview
 
 
+def test_overview_urls_accept_legacy_alias_and_entry_forms():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.overview = {
+        "title": "Example",
+        "url": "",
+        "URLs": [
+            {"label": "website", "url": "https://one.example", "mode": "default"},
+            ["website", "https://two.example"],
+            ["website", "https://three.example", "never"],
+            "https://four.example",
+        ],
+    }
+    data, _ = build_export_data(account)
+    overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
+    assert "URLs" not in overview
+    assert overview["url"] == "https://one.example"
+    assert overview["urls"] == [
+        {"label": "website", "url": "https://one.example", "mode": "default"},
+        {"label": "website", "url": "https://two.example", "mode": "default"},
+        {"label": "website", "url": "https://three.example", "mode": "never"},
+        {"label": "", "url": "https://four.example", "mode": "default"},
+    ]
+
+
+def test_overview_urls_accept_short_keys_and_numeric_modes():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.overview = {
+        "title": "Example",
+        "url": "https://primary.example",
+        "urls": [
+            {"l": "website", "u": "https://one.example", "m": 0},
+            {"l": "website", "u": "https://two.example", "m": 1},
+            {"l": "website", "u": "https://three.example", "m": 2},
+        ],
+    }
+    data, _ = build_export_data(account)
+    overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
+    assert overview["url"] == "https://primary.example"
+    assert overview["urls"] == [
+        {"label": "website", "url": "https://one.example", "mode": "default"},
+        {"label": "website", "url": "https://two.example", "mode": "host"},
+        {"label": "website", "url": "https://three.example", "mode": "never"},
+    ]
+
+
+def test_overview_urls_drop_malformed_entries():
+    account = synthetic_account()
+    account.vaults[0].key = b"x" * 32
+    item = account.vaults[0].items[0]
+    item.overview = {
+        "title": "Example",
+        "url": "https://one.example",
+        "urls": [
+            {"label": "website", "url": "https://one.example"},
+            ["bad", {"nested": 1}],
+            {"label": "bad", "url": {"nested": 1}},
+            {"label": {"nested": 1}, "url": "https://two.example"},
+        ],
+    }
+    data, _ = build_export_data(account)
+    overview = data["accounts"][0]["vaults"][0]["items"][0]["overview"]
+    assert overview["urls"] == [
+        {"label": "website", "url": "https://one.example", "mode": "default"},
+        {"label": "", "url": "https://two.example", "mode": "default"},
+    ]
+
+
 def test_login_field_type_is_not_restricted_to_a_short_enum():
     account = synthetic_account()
     account.vaults[0].key = b"x" * 32
